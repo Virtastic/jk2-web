@@ -273,7 +273,7 @@ if (!(escKc & KEYCATCH_UI)) {
 // This matters because the intermittent second-load failure measures `in_camera=1` at the point
 // of refusal. Proving the flag alone is sufficient to block the menu -- and that clearing it is
 // sufficient to restore it -- pins the mechanism down even on runs where the race does not fire.
-{
+if (!process.env.SKIP_CONTRACT) {
   await esc();                       // close the menu first
   await sleep(2500);
   await exec('cam_enable');
@@ -361,6 +361,15 @@ if (process.env.SECOND_MAP) {
     await sleep(2500);
   }
   console.log(`after 2nd load, ESC  : keyCatchers=${kc2}`);
+  {
+    // Dump the camera ring recorded without I/O on the failing path.
+    await exec('idt3camdump');
+    await sleep(1500);
+    const all = await S('Runtime.evaluate', { returnByValue: true, expression: 'JSON.stringify(window.__allLog||[])' });
+    let arr = []; try { arr = JSON.parse(all.result.value || '[]'); } catch {}
+    const ring = arr.filter(l => String(l).includes('IDT3RING')).map(l => String(l).trim());
+    console.log(`   camera ring (${ring.length}): ${ring.join(' | ')}`);
+  }
   console.log(`   page exceptions/console errors: ${pageErrors.length}`);
   for (const e of pageErrors.slice(0, 6)) console.log('     ' + String(e).slice(0, 300));
   {

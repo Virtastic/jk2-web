@@ -1,0 +1,138 @@
+JK2: v1.02 wasm32 Aug 19 2026
+Initialising zone memory .....
+----- FS_Startup -----
+Current search path:
+/jk2/base/assets5.pk3 (4 files)
+/jk2/base/assets2.pk3 (289 files)
+/jk2/base/assets1.pk3 (8011 files)
+/jk2/base/assets0.pk3 (6674 files)
+/jk2/base
+
+----------------------
+14978 files in pk3 files
+execing default.cfg
+couldn't exec jk2config.cfg
+couldn't exec autoexec.cfg
+----- Client Initialization -----
+----- Initializing Renderer ----
+-------------------------------
+----- Client Initialization Complete -----
+--- Common Initialization Complete ---
+------ Server Initialization ------
+JK2: v1.02 wasm32 Aug 19 2026
+Server: kejim_post
+----- R_Init -----
+WARNING: using emscripten GL immediate mode emulation. This is very limited in what it supports
+GLimp_Init: WebGL1 1258x622
+
+GL_VENDOR: WebKit
+GL_RENDERER: WebKit WebGL
+GL_VERSION: OpenGL ES 2.0 (WebGL 1.0 (OpenGL ES 2.0 Chromium))
+GL_EXTENSIONS: ANGLE_instanced_arrays EXT_blend_minmax EXT_clip_control EXT_color_buffer_half_float EXT_depth_clamp EXT_disjoint_timer_query EXT_float_blend EXT_frag_depth EXT_polygon_offset_clamp EXT_shader_texture_lod EXT_texture_compression_bptc EXT_texture_compression_rgtc EXT_texture_filter_anisotropic EXT_sRGB KHR_parallel_shader_compile OES_element_index_uint OES_fbo_render_mipmap OES_standard_derivatives OES_texture_float OES_texture_float_linear OES_texture_half_float OES_texture_half_float_linear OES_vertex_array_object WEBGL_blend_func_extended WEBGL_color_buffer_float WEBGL_compressed_texture_s3tc WEBGL_compressed_texture_s3tc_srgb WEBGL_debug_renderer_info WEBGL_debug_shaders WEBGL_depth_texture WEBGL_draw_buffers WEBGL_lose_context WEBGL_multi_draw WEBGL_polygon_mode GL_EXT_texture_env_combine GL_ARB_texture_env_crossbar GL_ATI_texture_env_combine3 GL_NV_texture_env_combine4 GL_EXT_texture_env_dot3 GL_ARB_multitexture GL_ARB_vertex_buffer_object GL_EXT_framebuffer_object GL_ARB_vertex_program GL_ARB_fragment_program GL_ARB_shading_language_100 GL_ARB_shader_objects GL_ARB_vertex_shader GL_ARB_fragment_shader GL_ARB_texture_cube_map GL_EXT_draw_range_elements GL_ARB_texture_compression GL_EXT_texture_compression_s3tc GL_EXT_texture_filter_anisotropic
+GL_MAX_TEXTURE_SIZE: 16384
+GL_MAX_ACTIVE_TEXTURES_ARB: 2
+
+PIXELFORMAT: color(32-bits) Z(24-bit) stencil(8-bits)
+MODE: 3, 1258 x 622 fullscreen hz:N/A
+GAMMA: hardware w/ 0 overbright bits
+CPU: 
+rendering primitives: single glDrawElements
+texturemode: GL_LINEAR_MIPMAP_LINEAR
+picmip: 0
+texture bits: 0
+lightmap texture bits: 0
+multitexture: enabled
+compiled vertex arrays: disabled
+texenv add: enabled
+compressed textures: disabled
+compressed lightmaps: disabled
+texture compression method: None
+anisotropic filtering: enabled
+Initializing Shaders
+----- finished R_Init -----
+
+------- sound initialization -------
+SNDDMA_Init: Web Audio 44100 Hz, 2 ch, 16 bit
+----- Sound Info -----
+sound system is muted
+    1 stereo
+65536 samples
+   16 samplebits
+    1 submission_chunk
+44100 speed
+0x22b1000 dma buffer
+No background file.
+----------------------
+------------------------------------
+
+--- ambient sound initialization ---
+Sound memory manager started
+UI menu load time = 98 milli seconds
+RE_Shutdown( 0 )
+Initializing Shaders
+------- Game Initialization -------
+gamename: base
+gamedate: Aug 19 2026
+Parsing ext_data/NPCs.cfg
+------ ICARUS Initialization ------
+ICARUS version : 1.33
+-----------------------------------
+^3Couldn't find image for shader [NoMaterial]
+2 teams with 4 entities
+-----------------------------------
+-----------------------------------
+----- R_Init -----
+Initializing Shaders
+----- finished R_Init -----
+UI menu load time = 10 milli seconds
+^3Couldn't find image for shader [nomaterial]
+fx_runner_link: target specified but not found: t9
+  -assuming UP orientation.
+Parsing menu file:ui/hud.menu
+UI menu load time = 0 milli seconds
+AS_ParseFile: Loaded 13 of 194 ambient set(s)
+...loaded 14235 faces, 1036 meshes, 9 trisurfs, 0 flares
+^3Couldn't find image for shader gfx/2d/crosshairj
+CL_InitCGame:  1.94 seconds
+7 msec to draw all images
+Com_TouchMemory: 99062269 bytes, 1 msec
+maps/kejim_post.bsp (4092 -1724 63) : 212
+###IDT3TRANS 
+==== ShutdownGame ====
+... ICARUS_Shutdown
+... Reference Tags Cleared
+... Navigation Data Cleared
+... Ghoul2 Models Shutdown
+------ Server Initialization ------
+JK2: v1.02 wasm32 Aug 19 2026
+Server: kejim_base
+RE_Shutdown( 0 )
+Initializing Shaders
+------- Game Initialization -------
+gamename: base
+gamedate: Aug 19 2026
+Parsing ext_data/NPCs.cfg
+------ ICARUS Initialization ------
+ICARUS version : 1.33
+-----------------------------------
+^3Couldn't find image for shader [NoMaterial]
+2 teams with 4 entities
+-----------------------------------
+-----------------------------------
+----- R_Init -----
+Initializing Shaders
+----- finished R_Init -----
+UI menu load time = 7 milli seconds
+^3Couldn't find image for shader [nomaterial]
+Parsing menu file:ui/hud.menu
+UI menu load time = 0 milli seconds
+AS_ParseFile: Loaded 13 of 194 ambient set(s)
+...loaded 15095 faces, 679 meshes, 2 trisurfs, 0 flares
+^3Couldn't find image for shader gfx/2d/crosshairj
+^3Couldn't find image for shader icons/w_icon_turret
+^3Couldn't find image for shader icons/w_icon_turret_na
+CL_InitCGame:  1.08 seconds
+3 msec to draw all images
+Com_TouchMemory: 119603693 bytes, 1 msec
+maps/kejim_base.bsp (416 792 60) : -180
+maps/kejim_base.bsp (416 792 60) : -180
