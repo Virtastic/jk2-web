@@ -20,11 +20,11 @@
 #endif
 
 #if !defined(G2_H_INC)
-	#include "G2.h"
+	#include "g2.h"
 #endif
 
 #if !defined(MINIHEAP_H_INC)
-	#include "..\qcommon\MiniHeap.h"
+	#include "..\qcommon\miniheap.h"
 #endif
 
 

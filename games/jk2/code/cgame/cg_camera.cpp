@@ -1397,8 +1397,8 @@ static void CGCam_Roff( void )
 	}
 
 	// Yeah, um, I guess this just has to be negated?
-	ang[PITCH] =- ang[PITCH];
-	ang[ROLL]  =- ang[ROLL];
+	ang[PITCH] = - ang[PITCH];
+	ang[ROLL]  = - ang[ROLL];
 	// might need to to yaw as well.  need a test...
 
 #ifdef _DEBUG

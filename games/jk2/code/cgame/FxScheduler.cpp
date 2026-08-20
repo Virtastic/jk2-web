@@ -11,7 +11,7 @@
 #endif
 
 #if !defined(G2_H_INC)
-	#include "../ghoul2/G2.h"
+	#include "../ghoul2/g2.h"
 #endif
 
 #if !defined(__Q_SHARED_H)

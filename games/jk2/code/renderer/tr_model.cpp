@@ -6,7 +6,7 @@
 
 #include "tr_local.h"
 using namespace std;  // idTech3-web: tr_model uses pair<> unqualified
-#include "MatComp.h"
+#include "matcomp.h"
 #include "../qcommon/sstring.h"
 
 #define	LL(x) x=LittleLong(x)
@@ -341,6 +341,12 @@ static qboolean gbAllowScreenDissolve = qtrue;
 void RE_RegisterMedia_LevelLoadBegin(const char *psMapName, ForceReload_e eForceReload, qboolean bAllowScreenDissolve)
 {
 	gbAllowScreenDissolve = bAllowScreenDissolve;
+#ifdef __EMSCRIPTEN__
+	// idTech3-web: grab the CURRENT screen before this load replaces it; RE_InitDissolve()'s own
+	// read at load END returns white. See tr_draw.cpp.
+	extern void IDT3_RequestScreenGrab( void );
+	if ( bAllowScreenDissolve ) IDT3_RequestScreenGrab();
+#endif
 
 	// for development purposes we may want to ditch certain media just before loading a map...
 	//

@@ -1781,6 +1781,24 @@ Called before every level change or subsystem restart
 */
 void CG_Shutdown( void ) 
 {
+	// idTech3-web: clear the cinematic-camera flag on level change.
+	//
+	// This single line is what JKA's CG_Shutdown has and JK2's does not -- the two functions
+	// are otherwise identical, comment included. Raven fixed this in the later engine; the JK2
+	// drop predates the fix.
+	//
+	// Without it, a level that ends while a cinematic is still playing leaves in_camera set:
+	// the ICARUS script that would have run camera( DISABLE ) dies with the level. On PC the
+	// game+cgame DLL is unloaded per map, so the flag returns to its static initialiser anyway
+	// and the omission is invisible. Our side module persists, so it carries into the next
+	// level, which then behaves as though a cutscene were playing -- CGCam_Enable's own
+	// "Player zero not allowed to do anything" leaves the player unplaced at the world origin,
+	// and GameAllowedToSaveHere() (g_savegame.cpp, JK2: simply `return !in_camera;`) makes
+	// UI_SetActiveMenu return at its first line, so ESC does nothing.
+	//
+	// Measured on kejim_post -> kejim_base: before, 1 pass / 6 fail with the player stuck at
+	// (0 0 6) for 264s and immobile in all four directions; after, 4/4 pass, origin left in 1s.
+	in_camera = false;
 	FX_Free();
 }
 

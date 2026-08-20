@@ -420,6 +420,34 @@ typedef struct
 
 } Dissolve_t;
 
+#ifdef __EMSCRIPTEN__
+// idTech3-web: screen grab held across a level load, for the dissolve. Same fix as jka-web;
+// see that file for the measurements. RE_InitDissolve() runs at load END and its qglReadPixels
+// returns pure WHITE there, while the same call from the per-frame path returns real content --
+// but after the load the old screen is already replaced, and a TEXTURE captured at load start
+// does not survive the media purge. A plain byte buffer survives all of it: request a grab when
+// the load BEGINS, take it from the per-frame path while the old screen is still up, hold it as
+// raw bytes, and let RE_InitDissolve() consume it instead of its own broken read. Kept in raw
+// bottom-up readPixels order so Init's existing flip still applies unchanged.
+static byte *s_pHeldGrab = NULL;
+static int   s_iHeldW = 0, s_iHeldH = 0;
+static qboolean s_bWantGrab = qfalse;
+void IDT3_RequestScreenGrab( void ) { s_bWantGrab = qtrue; }
+static void IDT3_TakeScreenGrabIfWanted( void )
+{
+	if ( !s_bWantGrab || !glConfig.vidWidth || !glConfig.vidHeight ) return;
+	s_bWantGrab = qfalse;
+	int iBytes = glConfig.vidWidth * glConfig.vidHeight * 4;
+	if ( s_pHeldGrab && ( s_iHeldW != glConfig.vidWidth || s_iHeldH != glConfig.vidHeight ) ) {
+		Z_Free( s_pHeldGrab ); s_pHeldGrab = NULL;
+	}
+	if ( !s_pHeldGrab ) s_pHeldGrab = (byte *) Z_Malloc( iBytes, TAG_TEMP_WORKSPACE, qfalse );
+	if ( !s_pHeldGrab ) return;
+	s_iHeldW = glConfig.vidWidth; s_iHeldH = glConfig.vidHeight;
+	qglReadPixels( 0, 0, s_iHeldW, s_iHeldH, GL_RGBA, GL_UNSIGNED_BYTE, s_pHeldGrab );
+}
+#endif
+
 static int PowerOf2(int iArg)
 {
 	if ( (iArg & (iArg-1)) != 0)
@@ -505,6 +533,9 @@ static void RE_KillDissolve(void)
 #define iSAFETY_SPRITE_OVERLAP 2	// #pixels to overlap blit region by, in case some drivers leave onscreen seams
 qboolean RE_ProcessDissolve(void)
 {
+#ifdef __EMSCRIPTEN__
+	IDT3_TakeScreenGrabIfWanted();
+#endif
 	if (Dissolve.iStartTime)
 	{
 		if (Dissolve.bTouchNeeded)
@@ -791,6 +822,22 @@ qboolean RE_ProcessDissolve(void)
 //
 qboolean RE_InitDissolve(qboolean bForceCircularExtroWipe)
 {
+	// idTech3-web: the screen-dissolve wipe cannot work under emscripten's GL emulation.
+	// Diagnosed on jka-web (see its docs/WASM_ADAPTATIONS.md); JK2 carries the identical Raven
+	// implementation -- same qglClear(GL_DEPTH_BUFFER_BIT), same alpha-tested colour-invisible
+	// depth mask (GLS_SRCBLEND_ZERO|GLS_DSTBLEND_ONE|GLS_ATEST_LT_80), same GLS_DEPTHFUNC_EQUAL
+	// reveal, same immediate-mode qglBegin(GL_QUADS)/qglVertex2f blits, and even the same
+	// iSAFETY_SPRITE_OVERLAP ("in case some drivers leave onscreen seams") workaround.
+	//
+	// The mask depth does not survive emscripten's immediate-mode emulation, so the EQUAL reveal
+	// draws intermittently and banded. Measured on JKA over 4 runs per depth-func: EQUAL revealed
+	// in only 1 of 4 runs and that frame carried 16 sharp column steps; LEQUAL revealed in 4 of 4
+	// but covered the whole screen, i.e. no wipe boundary. Neither is the intended progressive
+	// wipe, so it is not a depth-func tuning problem.
+	//
+	// Skipping it gives a clean cut instead of an intermittently-banded wipe. Restoring the effect
+	// properly means clipping the reveal with a scissor rectangle per wipe direction rather than
+	// using the depth buffer as a stencil.
 	int x, y, i; // idTech3-web: hoisted from for-loops (MSVC for-scope)
 //	ri.Printf( PRINT_ALL, "RE_InitDissolve()\n");
 	qboolean bReturn = qfalse;
@@ -811,7 +858,16 @@ qboolean RE_InitDissolve(qboolean bForceCircularExtroWipe)
 		{
 			// read current screen image...  (GL_RGBA should work even on 3DFX in that the RGB parts will be valid at least)
 			//
+#ifdef __EMSCRIPTEN__
+			// Prefer the grab taken before this load started; reads from HERE return white.
+			if ( s_pHeldGrab && s_iHeldW == glConfig.vidWidth && s_iHeldH == glConfig.vidHeight ) {
+				memcpy( pBuffer, s_pHeldGrab, glConfig.vidWidth * glConfig.vidHeight * 4 );
+			} else {
+				qglReadPixels (0, 0, glConfig.vidWidth, glConfig.vidHeight, GL_RGBA, GL_UNSIGNED_BYTE, pBuffer );
+			}
+#else
 			qglReadPixels (0, 0, glConfig.vidWidth, glConfig.vidHeight, GL_RGBA, GL_UNSIGNED_BYTE, pBuffer );
+#endif
 			//
 			// now expand the pic over the top of itself so that it has a stride value of {PowerOf2(glConfig.vidWidth)}
 			//	(for GL power-of-2 rules)

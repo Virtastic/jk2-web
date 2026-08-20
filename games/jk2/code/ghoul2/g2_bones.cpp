@@ -15,10 +15,10 @@
 	#include "../qcommon/qcommon.h"
 #endif
 
-#include "../renderer/MatComp.h"
+#include "../renderer/matcomp.h"
 
 #if !defined(G2_H_INC)
-	#include "G2.h"
+	#include "g2.h"
 #endif
 
 extern	cvar_t	*r_Ghoul2BlendMultiplier;

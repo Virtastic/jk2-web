@@ -8,7 +8,7 @@
 #include "tr_local.h"
 
 #if !defined(G2_H_INC)
-	#include "../ghoul2/G2.h"
+	#include "../ghoul2/g2.h"
 #endif
 
 trGlobals_t		tr;

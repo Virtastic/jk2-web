@@ -13,7 +13,7 @@
 #endif
 
 #if !defined(G2_H_INC)
-	#include "G2.h"
+	#include "g2.h"
 #endif
 
 #define G2_MODEL_OK(g) ((g)&&(g)->mValid&&(g)->aHeader&&(g)->currentModel&&(g)->animModel)

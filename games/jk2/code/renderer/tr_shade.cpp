@@ -1353,6 +1353,27 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 			R_DrawElements( input->numIndexes, input->indexes );
 		}
 	}
+#ifdef __EMSCRIPTEN__
+	// idTech3-web: DrawMultitextured() enables unit 1's TEXCOORD ARRAY (tr_shade.cpp:507) and
+	// never disables it. Desktop GL ignores texcoords for a disabled unit so it costs nothing
+	// there. Under emscripten's LEGACY_GL_EMULATION it does matter:
+	// GLImmediate.createRenderer() derives the vertex layout from
+	// enabledClientAttributes[TEXTURE0+i], so a still-enabled TEXTURE1 array keeps contributing
+	// to `stride` and to the interleaved restride on every later single-texture draw, with its
+	// pointer still aimed at whatever svars.texcoords[1] last held — a layout that depends on
+	// draw history. JK2 already does the correct paired teardown at tr_shade.cpp:1708, which is
+	// the in-tree precedent.
+	//
+	// Disable ONCE here, after the stage loop, NOT inside DrawMultitextured. Measured on jka-web
+	// (identical code shape): the per-draw form cost ~40% of the frame rate, 125fps -> 73-78fps,
+	// because glEnableClientState is a no-op when the array is already on, so the original
+	// invalidates glemu's cached renderer once while a per-draw disable/enable pair invalidates it
+	// twice per multitexture draw. Surface granularity keeps the state from leaking into later
+	// surfaces and 2D passes at zero measurable cost.
+	qglClientActiveTextureARB( GL_TEXTURE1_ARB );
+	qglDisableClientState( GL_TEXTURE_COORD_ARRAY );
+	qglClientActiveTextureARB( GL_TEXTURE0_ARB );
+#endif
 }
 
 /*

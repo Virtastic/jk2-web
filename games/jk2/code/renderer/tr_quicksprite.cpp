@@ -2,7 +2,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 #include "../server/exe_headers.h"
-#include "tr_QuickSprite.h"
+#include "tr_quicksprite.h"
 
 extern void R_BindAnimatedImage( const textureBundle_t *bundle );
 
@@ -102,6 +102,17 @@ void CQuickSpriteSystem::Flush(void)
 
 		// Second pass from fog
 		backEnd.pc.c_totalIndexes += mNextVert;
+#ifdef __EMSCRIPTEN__
+		// idTech3-web: the fog pass above disables GL_COLOR_ARRAY (and sets a flat qglColor4ubv) and
+		// nothing re-enables it, so this function returns with the colour array still off. Later draws
+		// expecting per-vertex colours then inherit that one flat fog colour -- a direct mechanism for
+		// surfaces flashing bright/uniform. Desktop GL usually masks it because the next shader stage
+		// re-enables the array itself and a redundant enable is free; under LEGACY_GL_EMULATION the
+		// enabled-attribute set also decides the vertex layout GLImmediate.createRenderer() builds, so
+		// we cannot rely on that. Same defect exists in jka-web; fixed there too.
+		qglEnableClientState( GL_COLOR_ARRAY );
+		qglColorPointer( 4, GL_UNSIGNED_BYTE, 0, mColors );
+#endif
 	}
 
 	// 
@@ -113,6 +124,16 @@ void CQuickSpriteSystem::Flush(void)
 		GLimp_LogComment( "glUnlockArraysEXT\n" );
 	}
 
+#ifdef __EMSCRIPTEN__
+	// idTech3-web: balance the client arrays enabled at the top of Flush()
+	// (GL_TEXTURE_COORD_ARRAY, GL_COLOR_ARRAY). Neither was ever disabled, so the state leaked out
+	// of every surface-sprite batch. Same defect and reasoning as DrawMultitextured() in
+	// tr_shade.cpp: glemu derives the vertex layout from enabledClientAttributes, so a stale array
+	// keeps contributing to stride and the interleaved restride on every later draw, its pointer
+	// still aimed at this system's mTextureCoords / mColors.
+	qglDisableClientState( GL_TEXTURE_COORD_ARRAY );
+	qglDisableClientState( GL_COLOR_ARRAY );
+#endif
 	mNextVert=0;
 }
 

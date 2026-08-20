@@ -12,12 +12,12 @@
 	#include "tr_local.h"
 #endif
 
-#include "MatComp.h"
+#include "matcomp.h"
 #if !defined(_QCOMMON_H_)
 	#include "../qcommon/qcommon.h"
 #endif
 #if !defined(G2_H_INC)
-	#include "../ghoul2/G2.h"
+	#include "../ghoul2/g2.h"
 #endif
 
 #define	LL(x) x=LittleLong(x)

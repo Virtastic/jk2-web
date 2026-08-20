@@ -552,7 +552,31 @@ void CNavigator::Free( void )
 	{
 		delete (*ni);
 	}
+
+	// idTech3-web: clear the containers, not just the nodes they point at.
+	//
+	// As shipped this deletes every CNode and leaves m_nodes holding that many DANGLING
+	// pointers. On PC that is harmless by luck: NAV_Shutdown() runs from ShutdownGame(), the
+	// game DLL is unloaded immediately after, and the vector dies with it. A side module that
+	// is never unloaded keeps them -- and Load() APPENDS (STL_INSERT) rather than replacing, so
+	// the next map indexes the previous map's freed nodes.
+	//
+	// Caught with a named stack trace (side module rebuilt with --profiling-funcs to get it):
+	//   RuntimeError: memory access out of bounds
+	//     CNavigator::GetNearestNode(gentity_s*, int, int, int)
+	//     NAV_FindClosestWaypointForPoint(float*)
+	//     CP_FindCombatPointWaypoints()
+	//     InitGame(...)
+	// thrown out of InitGame on the SECOND map load, leaving the client stuck at CA_CONNECTED
+	// and the world never loading.
+	//
+	// Latent in the shipping build, which re-instantiates the module per map -- but it is a
+	// real use-after-free either way, and it is precisely what stopped JK2 loading a map twice
+	// when that re-instantiation was removed. m_edgeLookupMap is filled by Load() the same way.
+	m_nodes.clear();
+	m_edgeLookupMap.clear();
 }
+
 
 /*
 -------------------------

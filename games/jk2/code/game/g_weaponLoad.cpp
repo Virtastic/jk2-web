@@ -112,6 +112,7 @@ void WPN_StopSnd( const char **holdBuf );
 void WPN_ChargeSnd (const char **holdBuf);
 void WPN_AltChargeSnd (const char **holdBuf);
 void WPN_SelectSnd (const char **holdBuf);
+void WPN_ForceFeedbackIgnored (const char **holdBuf);
 void WPN_Range (const char **holdBuf);
 void WPN_WeaponClass ( const char **holdBuf);
 void WPN_WeaponIcon (const char **holdBuf);
@@ -181,7 +182,18 @@ wpnParms_t WpnParms[] =
 	"missileHitSound",		WPN_MissileHitSound,
 	"altmissileHitSound",	WPN_AltMissileHitSound,
 	"muzzleEffect",			WPN_MuzzleEffect,
-	"altmuzzleEffect",		WPN_AltMuzzleEffect
+	"altmuzzleEffect",		WPN_AltMuzzleEffect,
+	// idTech3-web: force-feedback (Immersion/FeelIt) parms. The retail 1.04 patch data
+	// (assets2.pk3 ext_data/weapons.dat) carries these, each naming an fffx/ effect path.
+	// This build ships no force-feedback support (the FeelIt TUs are excluded in
+	// build-jk2.sh), so the table had no entry and WP_ParseWeaponParms treats ANY unknown
+	// token as ERR_FATAL — "bad parameter in external weapon data 'firingforce'" — which
+	// killed JK2 outright at the first map load on retail data. Parse and discard, which
+	// is what a build without force feedback should do.
+	"firingForce",			WPN_ForceFeedbackIgnored,
+	"chargeForce",			WPN_ForceFeedbackIgnored,
+	"altchargeForce",		WPN_ForceFeedbackIgnored,
+	"selectForce",			WPN_ForceFeedbackIgnored
 };
 
 const int WPN_PARM_MAX =  sizeof(WpnParms) / sizeof(WpnParms[0]);
@@ -753,6 +765,17 @@ void WPN_BarrelCount(const char **holdBuf)
 
 
 //--------------------------------------------
+//--------------------------------------------
+// idTech3-web: consume-and-ignore for the force-feedback parms (see WpnParms above).
+void WPN_ForceFeedbackIgnored( const char **holdBuf )
+{
+	const char	*tokenStr;
+
+	// Must still consume the value, or the parser would read it as the next parameter
+	// name and fatal on that instead.
+	COM_ParseString( holdBuf, &tokenStr );
+}
+
 static void WP_ParseWeaponParms(const char **holdBuf)
 {
 	const char	*token;
