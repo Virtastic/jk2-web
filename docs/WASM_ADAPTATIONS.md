@@ -302,21 +302,23 @@ so the world, menus, briefing, and MD3/MDC props looked fine while every charact
    MDS bone math type-puns pervasively (`short`↔`float`, compressed `mdsBoneFrameCompressed_t`);
    `-O2/-O3` strict-aliasing could reorder those reads. id's own Makefiles pass it. Rebuilt all 5.
 
-**Verified visually**, not just by reasoning: `verify-character.mjs` loads escape1 via `devmap`
-(skips the SP briefing) with `cg_thirdperson 1`, so the player's **own MDS body** renders in
-front of the camera. It draws as a clean, solid human figure (jacket, harness, trousers, head)
-that stays intact across animation frames — no spikes. Since enemy NPCs use the identical MDS
-path, this confirms the fix for the reported drop-down-guard artifact. The menu and the mission
-briefing (parchment/photo/text) also render pixel-faithfully in real Chrome. NOTE: the earlier
-render-dispatch histogram that reported "no MDS in the escape1 view" had sampled the spawn frame
-before any NPC spawned, and mislead an interim conclusion — the third-person player body is the
-reliable, input-free way to exercise the character path headless.
+**Verified visually**, not just by reasoning: `verify-character.mjs` (a screenshot-only probe,
+since deleted -- see "Ghoul2 characters and entity rendering, finally measured" below) loaded
+escape1 via `devmap` (skipping the SP briefing) with `cg_thirdperson 1`, so the player's **own
+MDS body** rendered in front of the camera. It drew as a clean, solid human figure (jacket,
+harness, trousers, head) that stayed intact across animation frames — no spikes. Since enemy
+NPCs use the identical MDS path, this confirms the fix for the reported drop-down-guard
+artifact. The menu and the mission briefing (parchment/photo/text) also render pixel-faithfully
+in real Chrome. NOTE: the earlier render-dispatch histogram that reported "no MDS in the escape1
+view" had sampled the spawn frame before any NPC spawned, and mislead an interim conclusion —
+the third-person player body is the reliable, input-free way to exercise the character path
+headless.
 
 ### Family-wide skeletal-render audit — all five clean (2026-07-17)
 
-The `verify-character.mjs` third-person trick (devmap + `cg_thirdperson 1`, wait, screenshot)
-became the standard way to exercise each engine's character path without gameplay input, and
-was applied across the family after the RTCW-SP fix:
+That third-person trick (devmap + `cg_thirdperson 1`, wait, screenshot) became the standard way
+to exercise each engine's character path without gameplay input, and was applied across the
+family after the RTCW-SP fix:
 
 - **RTCW-MP (MDS)** and **Wolf:ET (MDS + MDM)** carried the *same* two bugs latent — missing
   `SF_MDS` ident (MP only; ET's idents were already set) and the `int*`/`memcpy` 32-bit write
@@ -1082,3 +1084,2190 @@ plus a page pass, driven by live preview feedback ("dim, pillarboxed, console no
   `cg_fov` clamped to [90,121]); any `?r_*/cg_*/com_*/s_*/cl_*=v` becomes a trailing `+set`;
   engine output goes to a 2000-line ring (console clean; fatals still `console.error`);
   `?debug` log panel with download; `storage.persist()`; `webglcontextlost` → sync + reload.
+
+## Fixes ported from jka-web (2026-08-16)
+
+These were found while getting JKA running on retail Steam data, and each was re-verified
+against **JK2's own source** before being applied here — not assumed from the JKA result.
+
+### `game/bg_lib.cpp` was hijacking libc in the game module
+
+The headline one. `bg_lib.cpp` is idTech3's freestanding libc for the QVM interpreter, and
+its own header comment reads *"this file is excluded from release builds"*. `game/game.dsp`
+still lists it, so it was compiled into the side module — where its **non-static**
+definitions override musl's for every TU in that module:
+
+```
+abs atof atoi fabs rand strcat strchr strcmp strcpy strlen strstr tan tolower toupper vsprintf
+```
+
+Its `vsprintf` implements only `%i %d %u %f %s`. There is **no `case 'c'` and no default**,
+so `%c` emits nothing while still consuming its argument. Confirmed present in JK2's copy.
+Everything the game builds that way was silently truncated:
+
+| Site | What broke |
+|---|---|
+| `cgame/cg_main.cpp:1248` | all 9 crosshairs registered as `gfx/2d/crosshair` with no letter, so every one resolved to the default missing-image shader — a white-bordered black box at screen centre in every frame |
+| `cgame/cg_text.cpp` (4 sites) | subtitles, captions and on-screen print text, assembled with `va("%c%c", hi, lo)` — the entire story text layer, blank |
+| `cgame/cg_credits.cpp` | end credits text |
+
+Fixed by dropping the TU from `build-jk2-modules.sh`. Every symbol it defined is standard
+C, so musl supplies all of them. Note the source list uses bare filenames for
+`game/`-local files (`build-jk2-modules.sh` resolves `*/*` against `code/`, everything else
+against `code/game/`), hence the filter is `^bg_lib[.]cpp$`.
+
+### `-fno-strict-aliasing` was missing from the game module
+
+`env.sh` documents this as mandatory for idTech3 and `build-jk2.sh` passes it, but
+`build-jk2-modules.sh` did not — so all of game+cgame compiled at `-O2` with strict
+aliasing live. Documented failure mode is "vertices flung to garbage positions
+(spikes/shards shooting off the mesh)". A flag change invalidates every object, so this
+needs a full `rm -rf build-jk2/modules`, not an incremental rebuild — the staleness check
+compares timestamps and cannot see a compiler-flag change.
+
+### Function / navigation / keypad keys mapped to the wrong keys
+
+`sys_jk_gl.cpp`'s `MapKey()` fell through to `if (which >= 32 && which < 128) return
+tolower(which)`. The DOM `which` values for F1–F12 (112–123), PageUp (33), End (35),
+Home (36), Insert (45) and Delete (46) all land inside that range, so they arrived as
+printable characters: F1 as `p`, Home as `$`, Delete as `.` — and **F8 as `w`, i.e.
+pressing F8 walked the player forward**. Added explicit `code` matches; JK2's
+`client/keycodes.h` was checked to define every `K_*` used (`K_F1..K_F12`, `K_INS`,
+`K_DEL`, `K_HOME`, `K_END`, `K_PGUP`, `K_PGDN`, `K_PAUSE`, `K_CAPSLOCK`, the `K_KP_*` set).
+
+### Colour buffer is never cleared → `preserveDrawingBuffer`
+
+`RB_BeginDrawingView` sets `clearBits = GL_DEPTH_BUFFER_BIT` and only ORs in
+`GL_COLOR_BUFFER_BIT` for `r_fastsky` / portals / `RDF_NOWORLDMODEL`, because desktop GL
+keeps a persistent backbuffer and the skybox is assumed to repaint every pixel. WebGL gives
+no such guarantee: with `preserveDrawingBuffer` false the buffer contents are undefined once
+the compositor takes it. `GLimp_Init` now requests `preserveDrawingBuffer = EM_TRUE`.
+Worth knowing when reproducing renderer bugs: SwiftShader tends to hand back zeroes while a
+real multi-buffered GPU hands back an older frame, so this class of defect does **not**
+reproduce in headless software captures.
+
+### Page brightness overrides removed
+
+`play/jk2/index.html` forced `r_overBrightBits 0`, `r_mapOverBrightBits 2`,
+`r_intensity 1.3`, `r_gamma 1.2`. Checked against JK2 specifically:
+
+- `r_mapOverBrightBits` — **not a JK2 cvar at all** (it is RTCW/Q3). Inert.
+- `r_overBrightBits` — JK2 defaults this to **1** (unlike JKA's 0), so it is not trivially
+  redundant; but `R_SetColorMappings()` forces `tr.overbrightBits = 0` when
+  `deviceSupportsGamma` is false *and* again when not fullscreen, which is always the case
+  here. Verified in JK2's `tr_image.cpp`.
+- `r_gamma 1.2` — already the JK2 default in this build.
+- `r_intensity 1.3` — the only real deviation, and destructive: baked into every texture at
+  upload via `s_gammatable[s_intensitytable[p]]` and **clamped at 255**, permanently
+  crushing highlights to flat white. Measured on the identical JKA code path: mean luma
+  44.5→65.5 and pure-white clipped pixels 1.86%→2.67% of frame.
+
+All remain overridable per-run via the existing `?r_*=` query params.
+
+### Toolchain and harness portability
+
+`env.sh` hardcoded `/opt/homebrew/bin`, so the repo built only on the original macOS box. It
+now probes Homebrew, `$EMSDK`, `~/emsdk`, `/c/dev/emsdk`, `/opt/emsdk` in order, and on
+MSYS/Git-Bash sets `MSYS2_ARG_CONV_EXCL='-D;-s;-Wl,'` so the path-mangler leaves
+`-DPATH_SEP='/'` and `-DIDT3_FSROOT="/jk2"` alone while still converting `-I`/`-o`. Build
+from a path with no spaces — the scripts interpolate `$SRC`/`$INCLUDES` unquoted.
+
+All 30 CDP harnesses hardcoded the macOS Chrome bundle path and `/tmp`, making the test
+suite macOS-only; they now share `shared/wasm-build/chrome.mjs` (per-platform resolution,
+`$CHROME` override, `tmpProfile()` for scratch paths). `package.json` declares the
+previously undeclared `ws` dependency.
+
+`sys_jk_gl.cpp` also gains `idt3_exec_cmd` — queues a console command straight into the
+engine's command buffer, reachable from CDP via
+`Module.ccall('idt3_exec_cmd', null, ['string'], ['r_drawentities 0'])`. Driving the console
+by synthesising keystrokes is unusable for automation because SP **pauses** while the console
+is open, so a missed closing toggle stops frame production and every later screenshot comes
+back byte-identical — indistinguishable from "the cvar did nothing".
+
+### Not yet verified here
+
+JK2 has not been rebuilt-and-played against retail data in this pass; the fixes are applied
+and the engine compiles, but the crosshair/subtitle results were confirmed on JKA. The JK2
+retail path itself (`productid.txt` lives inside `assets0.pk3` for JK2) remains untested.
+
+### Fresh-clone build was impossible (found while validating the above)
+
+`build-jk2.sh` read a cached `build-jk2/engine-sources.txt` and had a regeneration
+fallback for when it is absent — but the fallback was **unreachable**. Under
+`set -euo pipefail`, a `VAR=$(failing-pipeline)` assignment aborts the script, so with no
+cache the script exited silently at that line, before the `if [ -z ... ]` that would have
+rebuilt the list. Symptom: `bash build-jk2.sh` produces no output, no `build-jk2/`
+directory, and exit status 0 from the surrounding shell — i.e. it looks like nothing
+happened at all. Fixed with `|| true` so the assignment cannot kill the script.
+
+`build-jk2-modules.sh` had the same hazard on its `game-sources.txt` read, made sharper by
+the `grep -v bg_lib` filter added above (grep exits 1 when it filters every line).
+
+Verified end to end on Windows/Git-Bash after the fix: engine 146 TUs, 0 errors ->
+`jk2.js` 1.27 MB + `jk2.wasm` 3.12 MB.
+
+### Retail data killed JK2 outright: `bad parameter in external weapon data 'firingforce'`
+
+Booting `+map kejim_post` on a full retail install aborted the engine immediately with
+`Sys_Error: bad parameter in external weapon data 'firingforce'`.
+
+Cause: `assets2.pk3` is the **1.04 patch**, and its `ext_data/weapons.dat` (16,201 bytes)
+overrides the base one from `assets0.pk3` (15,343 bytes). The patched file carries four
+Immersion force-feedback parameters that the base file does not:
+
+```
+firingForce      fffx/weapons/baton/idle
+chargeForce      fffx/weapons/...
+altchargeForce   fffx/weapons/bryar/altcharge
+selectForce      fffx/weapons/bryar/select
+```
+
+The GPL source drop ships no force-feedback support — `build-jk2.sh` excludes the FeelIt
+TUs — so `WpnParms[]` in `game/g_weaponLoad.cpp` has no entry for them, and
+`WP_ParseWeaponParms()` treats **any** unrecognised token as `Com_Error(ERR_FATAL, ...)`.
+One unknown keyword in a data file is therefore fatal.
+
+Every token in the patched `weapons.dat` was diffed against `WpnParms[]`; exactly those
+four are missing, everything else matches. Fixed by adding them to the table pointing at
+a `WPN_ForceFeedbackIgnored()` handler that consumes the value and discards it — which is
+what a build without force feedback should do. The handler MUST still consume the value,
+or the parser reads the effect path as the next parameter name and fatals on that instead.
+
+Note this only reproduces with the patch pak present. Base-only data parses fine, so the
+bug is invisible unless you test against a real, fully-patched retail install.
+
+### Confirmed working on retail data (same run, before the fatal)
+
+The filesystem and retail-mode path were already proven by that first boot:
+
+| check | result |
+|---|---|
+| `Couldn't find image for shader gfx/2d/crosshair` | **0** — the `bg_lib` fix works in JK2 |
+| `Running in restricted demo mode` | 0 — full retail mode, productid.txt resolved from inside assets0.pk3 |
+| `Corrupted pk3` | 0 |
+| paks mounted | 14,978 files across assets0/1/2/5 |
+| map | `Server: kejim_post` (the level the free demo does not contain) |
+
+## Presentation: aligned with ja2-web / openmw-web / jka-web (2026-08-16)
+
+Same pass as jka-web's — the shared launcher/loading design system. See
+`jka-web/docs/WASM_ADAPTATIONS.md` for the full component table; this section records only what
+was **different or worse here**.
+
+### `play/jk2/index.html`'s `<style>` block is now jka-web's, verbatim
+
+The first pass kept this page's existing Outcast-blue palette (`--gold:#5db2ff`, blue ember
+gradients, blue title glow) on the reasoning that each game should own its hue. That was wrong
+for the brief: against three warm gold/bronze siblings, blue read as a different product rather
+than the same one. The two `<style>` sections were already structurally identical — 213 lines
+each, differing **only** in colour values — so this one was replaced with jka-web's wholesale.
+
+Keep them in lockstep. Before editing either page's styling:
+
+```sh
+for g in jka jk2; do awk '/^<style>$/{f=1;next} /^<\/style><\/head>$/{f=0} f' \
+  ../${g}-web/play/$g/index.html > /tmp/$g.css; done; diff /tmp/jka.css /tmp/jk2.css
+```
+
+That should print nothing. Each game's identity lives in its title, glyph and copy, not its hue.
+
+### JK2 had none of the loading infrastructure the design needs
+
+jka-web's streaming stager had never been ported, so `play/jk2/index.html` still ran the
+original loader:
+
+```js
+fetch(url).then(async function(r){
+  FS.writeFile(dst, new Uint8Array(await r.arrayBuffer()));
+  removeRunDependency('pre:'+url);
+}).catch(function(e){ console.warn('preload failed:', e.message); removeRunDependency('pre:'+url); });
+```
+
+Three separate problems, all of which the new loading screen exposed immediately:
+
+1. **No progress at all.** `setLoading('downloading '+url)` is a string, not a byte count, so the
+   bar would have sat in its indeterminate sweep for the entire ~626MB stage. Building a
+   progress bar on top of this would have been decorative.
+2. **Peak memory doubled.** `new Uint8Array(await r.arrayBuffer())` holds every pak twice —
+   response buffer plus MEMFS's own copy. Now streamed into one exactly-sized array handed to
+   `FS.createDataFile(..., canOwn=true)`.
+3. **Staging failures were swallowed.** `console.warn` + `removeRunDependency` meant a failed or
+   truncated pak let the engine boot on top of missing data and die later somewhere unrelated.
+   Now it raises `Module.onFatal`, which drives the loading screen's error state. A short read is
+   detected explicitly (`off !== len`) — otherwise a truncated body reaches the engine as a
+   silently zero-padded pak, i.e. a bogus checksum and an unexplained `Corrupted pk3`.
+
+### Also missing here, ported in the same pass
+
+- **`__hasProductId()`** — the zip-tail scan that catches an incomplete pak selection before boot.
+  Note the JK2 difference: `productid.txt` lives inside **`assets0.pk3`**, not `assets2.pk3` as
+  in JKA. The help text and the rejection message both say so.
+- **Alt+Enter fullscreen** and the `__toast()` helper. jk2 had the pointer-lock hint inlined and
+  no fullscreen path whatsoever.
+
+### A real bug the redesign surfaced
+
+`discoverPaks()` relabelled the demo card's kicker, heading and lead when a full install is
+staged — but not its call to action. The card read "Play Jedi Outcast / The full game — 4 asset
+paks are staged on this server" above a button still saying **START THE DEMO**. Caught by
+eyeballing the rendered launcher, not by any test.
+
+### Verified
+
+Headless CDP against retail Jedi Outcast: launcher → card click → aggregate progress
+(`410.9 / 598.6 MB · 5 files`, bar tracking) → engine boot, `14978 files in pk3 files` across
+assets0/1/2/5, no fatals, no demo fallback.
+
+## Full-session audit on retail data (2026-08-17)
+
+Same audit pass as jka-web's — see `jka-web/docs/WASM_ADAPTATIONS.md` for the method, the
+harness-precondition lesson, and the shared findings. This section records only what differed
+here.
+
+### FIXED: renderer caps — but NOT with JKA's code
+
+Both games left the same two `glConfig` fields unset, because `GLW_InitExtensions()` lives in
+the excluded win32 GL layer in both. **The fix is not portable between them**, and copying
+JKA's block here would not compile:
+
+| | JKA | JK2 |
+|---|---|---|
+| `maxTextureFilterAnisotropy` | exists; tr_image clamps the cvar to it | **field does not exist at all** |
+| anisotropy level applied | `r_ext_texture_filter_anisotropic->value` | hardcoded `2.0f` (tr_image.cpp:127-131, 710-711) |
+| cvar default | `"16"` | `"1"` (tr_init.cpp:961) |
+| `textureEnvAddAvailable` | extension string only | extension string **AND** `r_ext_texture_env_add` |
+
+So JK2's `textureFilterAnisotropicAvailable` is a plain boolean gate with no clamp to defeat —
+which is exactly why JKA's symptom (its requested `8` being rewritten to `0`) has no JK2
+equivalent. Both now report `anisotropic filtering: enabled` and `texenv add: enabled`.
+
+### FIXED: saves/config persistence
+
+JK2 has no `fs_homepath` either — checked independently, same result. Saves go to
+`saves/<name>.sav` (sv_savegame.cpp:114), config to `<gamedir>/jk2config.cfg`
+(common.cpp:1979). IDBFS now mounts `/jk2/base/saves` and `/jk2/demo/saves`; the config is
+mirrored. Proven across a reload: marker file restored with contents intact, and
+`vt_persist_probe` read back `8675309` in the second session.
+
+### NOT a bug: 90 "could not find sound/... - using default" warnings
+
+`AS_ParseFile: Loaded 13 of 194 ambient set(s)` plus ~90 missing-sound warnings looked like a
+data or lookup failure. It is neither.
+
+Every warned-about name was extracted from the log and checked against the central directories
+of all four retail pk3s (14832 entries), trying `.wav`, `.mp3` and bare:
+
+```
+ENGINE SAID MISSING BUT PRESENT IN PAKS: 0
+GENUINELY ABSENT FROM PAKS:             90
+```
+
+Zero false negatives — the engine is right, and the native game prints the same warnings. These
+are gaps in Raven's shipped data (the gonk and io droid sets reference sounds that were never
+built). The `13 of 194` line is also misleading in the original: it prints `pMap.size()`
+(unique precache entries, which `#clear` entries reset) against `numSets`, two different
+quantities.
+
+### Also verified here
+
+`kejim_post`: 14978 files across assets0/1/2/5, no demo fallback, no fatals, 125 fps, 43MB of
+level audio with dynamic music running, mouse look changes the frame, autosaves written.
+
+The level-start `cl_paused=1` pause described in jka-web's notes applies identically here
+(`ui_atoms.cpp:76`). Instrumentation confirmed that once the screen is dismissed the server
+ticks in real time and the save guard's `frameHealth` reaches 100 — the same guard and the same
+resolution as JKA. All instrumentation has been reverted; `games/` diff is the
+`g_weaponLoad.cpp` force-feedback fix only.
+
+### ROOT CAUSE: the screen-dissolve wipe (2026-08-17) — FIXED
+
+Diagnosed on jka-web; JK2 carries the **identical** Raven implementation, confirmed line by line
+before applying the same fix: same `qglClear(GL_DEPTH_BUFFER_BIT)`, same alpha-tested
+colour-invisible depth mask (`GLS_DEPTHMASK_TRUE | GLS_SRCBLEND_ZERO | GLS_DSTBLEND_ONE |
+GLS_ATEST_LT_80`), same `GLS_DEPTHFUNC_EQUAL` reveal, same immediate-mode
+`qglBegin(GL_QUADS)` / `qglVertex2f` blits in `RE_Blit()`, and the same
+`iSAFETY_SPRITE_OVERLAP 2 // in case some drivers leave onscreen seams` workaround.
+
+The effect uses the depth buffer as a stencil, and that mask depth does not survive emscripten's
+immediate-mode GL emulation — the path our own boot log flags as *"very limited in what it
+supports"*. Measured on JKA over 4 runs per depth-func: `GL_EQUAL` revealed in only 1 of 4 runs
+and that frame carried 16 sharp column steps (vertical banding); `GL_LEQUAL` revealed in 4 of 4
+but covered the whole screen, i.e. no wipe boundary. Neither is the intended progressive wipe.
+
+Fixed the same way — skip it under `__EMSCRIPTEN__`, giving a clean cut instead of an
+intermittently-banded wipe. See jka-web's notes for the full measurement table and for the
+scissor-rectangle approach that would restore the effect properly.
+
+**No-regression check**: `kejim_post` renders, `view changed: YES`, 125 fps, 48.16MB level audio
+with dynamic music running, no fatals.
+
+
+
+## Build hygiene sweep: the shipped build was the *developer* build (2026-08-18)
+
+Found by making the build genuinely clean rather than by chasing a symptom. Worst first; the
+first two meant the port could not be built at all on two of the three host families it
+claims to support.
+
+### The build scripts could not survive a space in the checkout path
+
+All four scripts assembled compiler arguments as space-joined *strings* and expanded them
+**unquoted**, which is the only way a string splits into separate argv entries:
+
+```sh
+INCLUDES="-I$SRC/qcommon -I$SRC/client ..."
+em++ $xflag $IDTECH3_COMMON_FLAGS $INCLUDES -c "$src" -o "$o"
+```
+
+Unquoted expansion splits on *every* space, including the ones inside `$SRC`. On a checkout
+under `C:/Users/First Last/...` — an ordinary Windows home directory — each `-I` became two
+broken arguments and **every engine TU failed**, 1008 diagnostics of the form
+
+```
+clang++: error: no such file or directory: 'Last/Documents/.../games/<game>/code/qcommon'
+```
+
+Everything is a bash array now: one element is exactly one argv entry whatever the path looks
+like. The inner quotes of `-DCPUSTRING="wasm32"` and `-DPATH_SEP='/'` are literal parts of the
+macro values, so they are quoted to survive into argv.
+
+The same defect had silently disabled the header-staleness check both scripts describe as
+load-bearing. `for _h in $(find "$SRC" ... -print)` word-splits identically, so every candidate
+was a non-existent fragment, `-nt` was false for all of them, `IDT3_NEWEST_HDR` stayed empty and
+**editing a header rebuilt nothing** — the exact failure its own comment says cost hours, twice.
+Now `-print0` / `read -r -d ""`.
+
+### #include directives that resolved only because Windows is case-insensitive
+
+`#include "rm_headers.h"` for `RM_Headers.h`, `#include "tr_QuickSprite.h"` for
+`tr_quicksprite.h`, `#include <FLOAT.H>` for `<float.h>`. Every one is a hard "file not found"
+on a case-sensitive filesystem — the Docker image, any Linux CI — so the port was
+Windows/macOS-only in practice. Rewritten to the on-disk spelling, driven by clang's own
+`-Wnonportable-include-path` diagnostic, which reports the correct name alongside the offending
+line.
+
+### The engine was compiled WITHOUT `FINAL_BUILD`
+
+The retail Release configuration is `NDEBUG,FINAL_BUILD,_JK2EXE,WIN32,_WINDOWS,_IMMERSION,_FF`
+(`starwars.vcproj` for JKA, `starwars.dsp` line 103 for JK2). We defined every one of those we
+can *except* `FINAL_BUILD`, so what shipped in the browser was Raven's developer configuration.
+Not cosmetic:
+
+* `files_pc.cpp:813` printed `FS_ReadFile: <file> NOT PRECACHED!` in magenta for every asset
+  loaded during play — four on a stock boot; retail prints none.
+* `snd_ambient` / `snd_music` / `snd_mem` / `msg.cpp` carried the same developer diagnostics.
+* `G2_API.cpp:31` now sets `G2API_DEBUG` to the retail `0`.
+* `common.cpp:13` stops pulling win32 `platform.h`; `OUTPUT_TO_BUILD_WINDOW` goes away.
+* `cl_keys.cpp:1336` restores the retail console gate (Shift + `` ` ``).
+
+`_IMMERSION`/`_FF` stay undefined deliberately: Immersion TouchSense force feedback, whose `ff/`
+TUs are excluded and which no browser can drive. Undefined, the engine compiles those paths out
+entirely — exactly like a desktop machine with no force-feedback device.
+
+### `ASSERTIONS` was on in an `-O3` shipping build
+
+Emscripten defaults `ASSERTIONS` to 1 and the link never overrode it. Beyond size and speed, the
+GL emulation hides two of its own diagnostics behind `#if ASSERTIONS`, so every boot logged
+`GL_TEXTURE1 coords are supplied, but that texture unit is disabled…` and `DrawElements doesn't
+actually prepareClientAttributes properly.` Now `-sASSERTIONS=${IDTECH3_ASSERTIONS:-0}`, with
+`STACK_OVERFLOW_CHECK` still at 1 — the failure that one catches (deep BSP/collision recursion)
+is worth paying for.
+
+### `glPolygonMode` and `glShadeModel` were emscripten TODOs — so `r_showtris` drew a white screen
+
+`libglemu.js` ships `glPolygonMode: () => {}` and `glShadeModel: () => warnOnce('TODO: …')`.
+`GL_State()`'s `GLS_POLYMODE_LINE` branch is the engine's *only* wireframe path, so with a no-op
+`glPolygonMode` both `r_showtris 1` and `r_debugSurface` drew their debug geometry **filled** — a
+solid white screen. Worth dwelling on given how much of this log is geometry-artifact hunting:
+the first two tools you would reach for were themselves broken the whole time.
+
+`glPolygonMode` is now backed by the `WEBGL_polygon_mode` extension — its `FRONT_AND_BACK` /
+`LINE_WEBGL` / `FILL_WEBGL` values are numerically identical to desktop GL's, so the engine's
+arguments pass straight through. The lookup is lazy and skips `GL_FILL` entirely, because FILL is
+already the pipeline default and probing the extension makes Chrome log a "very low support on
+mobile devices" warning that would then appear on every boot for a debug feature nobody asked
+for. `glShadeModel` is accepted silently: GLES2 has no flat-shading raster state, and the engine
+asks for `GL_SMOOTH`, which is already what the pipeline does.
+
+### Warnings: 1,900+ → 0, across both engines and both game modules
+
+Every category was read before being suppressed; the audit is the comment block above
+`IDTECH3_JK_WARNFLAGS` in `env.sh`. Two clang diagnostics carry **no option name at all**, so
+`-Wno-` cannot reach them and they were fixed in source instead — both token-level and
+parse-identical:
+
+* `typedef typename T X;` → `typedef T X;` (RATL headers). MSVC accepted `typename` before a bare
+  template parameter; standard C++ allows it only before a qualified dependent name.
+* `ang[ROLL] =- ang[ROLL];` → `= -` (`cg_camera.cpp`). A unary minus that reads as `-=`; the
+  commented-out line above it in the original spells the same operation.
+
+### Stubs removed, or promoted to real implementations
+
+* `Sys_CopyFile` / `Sys_FileOutOfDate` were hard-coded `qfalse` / `qtrue`. Now real POSIX
+  implementations of the win32 contract, 2-second mtime slop and read-only retry included.
+  They are reachable only through `fs_copyfiles` with an `fs_cdpath` set — but "unreachable" is
+  not "correct": the old `Sys_FileOutOfDate` answered *always out of date*, which would have
+  corrupted the cache the moment anyone did mount one.
+* `game_import_t gi` — deleted. With `-D_JK2EXE` no engine TU references it; the link is clean.
+* `TheGameGhoul2InfoArray()` returned `*(IGhoul2InfoArray *)NULL` — dead code *and* a latent null
+  dereference. `CGhoul2Info_v::InfoArray()` selects on `_JK2EXE`, so the engine takes the real
+  `TheGhoul2InfoArray()` in `G2_API.cpp` and only the game module wants the other, which
+  `g_main.cpp` defines for itself. Deleted.
+* What remains is documented rather than pretended away: the display-list entry points and
+  `g_bTextureRectangleHack` are confined to `r_DynamicGlow` (CVAR_ARCHIVE `"0"` in the retail
+  game, and WebGL has neither display lists nor ARB assembly shaders); `SF_DISPLAY_LIST` exists
+  in the enum and dispatch table but nothing in JK2/JKA ever creates one; `glArrayElement` is on
+  the `r_primitives 1` path that `GLimp_Init` deliberately never selects.
+
+### Harness fixes
+
+`console-check.mjs` read only the CDP console stream, but the page routes all engine output into
+a private ring (`window.__idt3_dumpLog`) to keep devtools clean — so it saw **one** log line on a
+perfectly healthy boot and declared "map NOT DETECTED" every time. It drains the ring now. Two
+new probes: `boot-log.mjs` (dump the engine's boot log verbatim, in order — a classifier throws
+away exactly the signal you need when a boot goes wrong) and `seq-shots.mjs` (time-series
+capture, which is how the intro cutscenes above were verified frame by frame).
+
+### Result, JK2
+
+141 engine TUs and the full game module compile with **0 errors and 0 warnings**, and the link is
+clean. A stock `+map kejim_post` boot reaches gameplay with **no errors** and five warning lines,
+**all five of which the retail desktop game also prints** — verified against the shipped data
+rather than assumed:
+
+* `Couldn't find image for shader gfx/2d/crosshairj` — `cg_media.h` defines `NUM_CROSSHAIRS 10`
+  and `cg_main.cpp:1248` registers `va("gfx/2d/crosshair%c", 'a'+i)`, i.e. `a`…`j`, but scanning
+  all four retail pk3s finds `crosshaira.tga` … `crosshairi.tga` and no `crosshairj`. Reproducing
+  this message *is* the 1:1 behaviour; silencing it would be the divergence.
+* `Couldn't find image for shader [NoMaterial]` / `[nomaterial]` — no such image exists in any
+  retail pk3 either.
+* `fx_runner_link: target specified but not found: t9` — `kejim_post` map data.
+
+The opening was verified end to end with `seq-shots.mjs`: the Star Wars perspective text crawl
+renders correctly, then the Raven's Claw cockpit scene with Kyle and Jan, then Mon Mothma's blue
+hologram.
+
+
+### The probes were guessing "is the player in control?" from pixels — now they ask the engine
+
+`verify-jk-move.mjs` decided the player had control by looking for a frame that was both
+**steady** and **bright**. That guess is wrong in both directions, and both directions bit:
+
+* **False negative.** JK2's `artus_mine` spawns the player in an unlit cave. Measured centre-band
+  luma there is **1.9**, far under the probe's `> 22` gate, so it burned its whole budget and
+  reported *"never confirmed player control"* on a build that was in `CA_ACTIVE` with time
+  advancing — verified directly with a temporary `CL_Frame` probe:
+  `state=7 keyCatch=0 serverTime=64460 msec=8`.
+* **False positive, which is worse.** On `kejim_post` the Star Wars title crawl is bright and
+  drifts slowly enough to read as steady, so the probe confirmed "control" on the very first
+  round and then printed a confident **`MOVED: YES`** measured entirely on scrolling title text.
+  It also printed `MOVED: YES` on a *black* cinematic fade, because a black frame trivially
+  satisfies "idle is quiet".
+
+The engine already knows the answer, so it now hands it over — a new export beside
+`idt3_exec_cmd` in the shared platform layer:
+
+```c
+// state | (keyCatchers << 8).  CA_ACTIVE (7) with no key-catcher == map running, and
+// neither console nor menu is eating input.
+extern "C" EMSCRIPTEN_KEEPALIVE int idt3_client_state( void ) {
+    return (int)cls.state | ( (int)cls.keyCatchers << 8 );
+}
+```
+
+`CA_ACTIVE` alone is still not sufficient — it is also true while an in-game ICARUS cinematic
+plays, and JKA's `t2_rogue` reaches it at wait+1 with the intro camera still flying (idle diff
+**42%**). The test is therefore the engine's fact **AND** a steady frame, with the brightness
+term dropped entirely. Both games now pass on maps that previously defeated the probe:
+
+| | control confirmed | idle | W-held | verdict |
+|---|---|---|---|---|
+| JKA `t2_rogue` | engine | 1.4% | 44.7% | **MOVED: YES** |
+| JK2 `artus_mine` | engine | 0.0% | 17.0% | **MOVED: YES** |
+
+Other probe fixes from the same session, each one a wrong answer someone would otherwise have
+believed:
+
+* `MOVED:` never reports YES/NO off the frame diff when control was never established; it says
+  `UNCONFIRMED` instead.
+* The wait budget is an argument (`[rounds]`), because 30 rounds cannot outlast JK2's ~70s crawl.
+* The cinematic-skip keypress only fires in the first 8 rounds — each press *toggles* the skip,
+  so pressing forever kept flipping it back off.
+* `cvar-ab.mjs` sanitises the cvar value before putting it in a filename; a value of `/` or `*`
+  (exactly what a shader-name bisect needs) produced an unopenable path and killed the run.
+* `seq-shots.mjs` sends a trusted CDP click after load, the gesture that lets the page resume its
+  AudioContext.
+* `boot-log.mjs` takes optional console commands, so engine state (`cl_paused`, `timescale`, …)
+  can be read out of the same log it already prints.
+* `console-check.mjs` counts `loaded N faces` as a map-loaded marker — without it JKA reported
+  "map NOT DETECTED" while rendering 218 draws/frame.
+
+**Standing lesson for anything that skips geometry:** set `r_clear 1` first. With the colour
+buffer left uncleared, skipped geometry leaves stale pixels from earlier frames and every capture
+lies — two flatly wrong conclusions came out of that before it was noticed.
+
+
+## The side module is never re-instantiated — two campaign-breaking leaks, found by sweeping maps
+
+`map-sweep.mjs` is new: it drives `map <name>` for a whole campaign **through the engine's own
+command buffer in one browser session**, then reports, per map, whether it reached `CA_ACTIVE`
+and every complaint the engine made while loading it. That last part is the point. Booting the
+same level over and over — which is what every probe here did before — cannot see a fault that
+only appears on the *fourteenth* map, and both faults below are exactly that shape.
+
+They share one root cause, already named elsewhere in this log: **on PC the game/cgame is a DLL
+that is unloaded and reloaded for every map, so its file-scope statics start each map at zero
+for free. Our module is a wasm side module instantiated once for the session and never
+re-instantiated.** Every static the original silently relies on the loader to re-zero is a
+latent bug here, and neither of these has any reset in the original source, because on PC
+neither ever needed one.
+
+### `MAX_ROFFS count exceeded` — scripted cameras and moving objects stop working (both games)
+
+`g_roff.cpp` has `roff_list_t roffs[MAX_ROFFS]; int num_roffs = 0;` — and `MAX_ROFFS` is
+**32**, with the original's own comment reading *"hard coded number of max roffs **per level**,
+sigh.."*. Per level. Nothing in the original ever assigns `num_roffs` again, because the DLL
+reload did it.
+
+Without a reset the count climbs across maps and, once past 32, every further `.ROF` is refused:
+
+```
+MAX_ROFFS count exceeded.  Skipping load of .ROF 'roff/cinematic35_kyle_jump'
+ROFF camera playback failed
+```
+
+ROFFs drive scripted camera moves and moving map objects, so this quietly breaks cinematics
+rather than crashing — the worse failure mode of the two, because nothing announces it.
+
+And it is not only a capacity leak. Each cached entry's `fileName` and `data` come from
+`G_NewString`/`G_Alloc`, i.e. the game arena that `G_InitMemory()` resets **one line above**
+where the fix goes. A stale entry therefore points into memory the next map has reused, so a
+name lookup that matches a previous map's ROFF hands back a dangling pointer. The reset goes
+immediately after `G_InitMemory()` in `InitGame()`, under `__EMSCRIPTEN__`.
+
+Both fixes are in JK2 and JKA (the `misc_model_static` one is JKA-only — JK2 has no
+cgame-side misc-model cache).
+
+**Method note.** Neither fault is visible from a single map, a screenshot, or a clean compile;
+both were found by loading the campaign end to end and *reading what the engine said*. That is
+now a standing check rather than a one-off — `map-sweep.mjs <port> "<maps>"`, exit code non-zero
+if any map fails to reach gameplay.
+
+
+## Whole-port verification, end to end (2026-08-19)
+
+Everything below is a fresh measurement against the final binaries, not a recollection.
+
+| check | JK2 |
+|---|---|
+| engine build (141 TUs) | 0 errors, 0 warnings |
+| game module build | 0 errors, 0 warnings |
+| link | clean |
+| boot `kejim_post` (`console-check.mjs`) | 0 errors; 4 warnings, all of which retail prints too |
+| render (`verify-jk-play.mjs`) | renders; `artus_mine` canyon and the full intro verified by screenshot |
+| sustained fps (`perf-probe.mjs`) | 125 fps, CPU 7.75 ms median / 8.49 ms p95 |
+| audio (`audio-test.mjs`) | context running 44.1 kHz, play cursor advancing, peak 0.33 |
+| movement (`verify-jk-move.mjs`) | **MOVED: YES** — control confirmed by the engine, idle 0.0% vs W-held 17.0% |
+| **whole campaign** (`map-sweep.mjs`, 26 maps, one session) | **26/26 reach gameplay** |
+| savegame round-trip (`verify-jk-save.mjs`) | **PASS** — 1,249,330-byte save, survives a full page reload, `load` reaches gameplay |
+
+Fixing the `.ROF` cache reset took the campaign sweep's distinct complaints from **56 to 17** —
+the ~39 removed were all `MAX_ROFFS count exceeded` and the `ROFF camera playback failed` that
+follows from it. What remains is retail content behaviour: shaders whose images genuinely are not
+in the shipped pk3s (`[NoMaterial]`, `crosshairj` — the code registers ten crosshairs, the data
+ships nine), images reused at two clamp modes, `item_shield doesn't have a spawn function`, and
+per-map script/entity warnings such as `fx_runner_link: target specified but not found: t9`.
+
+The opening sequence was verified frame by frame with `seq-shots.mjs`: Star Wars perspective text
+crawl, then the Raven's Claw cockpit with Kyle and Jan, then Mon Mothma's hologram.
+
+
+### `vid_restart` killed the renderer outright — a canvas only ever yields one WebGL context
+
+Found while chasing the single `glGetError() = 0x500` the campaign sweep reported. That error
+turned out to come from `InitOpenGL()`, which only runs again on a **renderer restart** — so I
+issued one, and the game died on the spot:
+
+```
+Uncaught TypeError: Cannot read properties of null (reading 'version')
+    at _emscripten_glTexImage2D
+    at <wasm> ...
+```
+
+`GLimp_Shutdown()` was calling `emscripten_webgl_destroy_context()`, and `GLimp_Init()` then
+asked the canvas for a new one. A browser canvas hands out exactly one WebGL context for its
+lifetime, so after the destroy there was nothing to get back: `GL.currentContext` stayed null and
+the first texture upload of the reload threw.
+
+This is not an exotic path. `vid_restart` is what every video-settings change in the menu issues
+— resolution, texture detail, anisotropy, MSAA — and this log already records the page's own
+resize handling triggering restarts too (which is why they were rate-limited). Any player who
+opened the video menu and changed anything lost the renderer.
+
+The fix is to create the context once and keep it: `GLimp_Init()` reuses `glCtx` if it already
+has one, and `GLimp_Shutdown()` no longer destroys it. Nothing the engine expects from a restart
+is lost, because the parts that matter — deleting and re-uploading every texture, re-running
+`GL_SetDefaultState`, reloading the world — are renderer-side work that still happens. Reusing
+is also the only honest option for the context *attributes*: WebGL fixes those at creation, so a
+"fresh" context could never have applied a changed MSAA or depth setting anyway.
+
+`GLimp_Init()` additionally clears the whole drawing buffer once at the (possibly new) size. The
+context is created with `preserveDrawingBuffer` because the Raven renderer never clears colour —
+it assumes the skybox repaints every pixel — and that assumption does not survive a restart at a
+different resolution, where any region the new viewport does not cover would keep the old frame's
+pixels for the rest of the session.
+
+Verified after the fix, on both games: `vid_restart` completes (renderer re-initialises, world
+reloads), with **no exception, no page error and no GL error**, and gameplay continues — HUD,
+NPCs and weapon fire all rendering.
+
+**A wrong turn worth recording.** I read a bright vertical band in the post-restart screenshot as
+a viewport seam and "fixed" it twice before measuring it. Scoring the mean horizontal luma
+gradient per column put the suspect edge at 33.7 — but the same measurement on frames from runs
+with *no* restart at all gives 23.4, 26.8 and 31.3 for ordinary scenery. It was a wall edge in
+the cantina corridor. The lesson is the same one this log keeps relearning: score the pixels
+before believing what they look like.
+
+
+## Force feedback is not a port gap — a Win32 binary blob, and off by default in retail
+
+Recorded here because the same question will come up for JK2. Three facts from the drop itself:
+
+* `code/ff/IFC/` ships **`IFC22.dll` and `IFC22.lib` with zero source files** — Immersion
+  Foundation Classes as a prebuilt Win32 x86 binary. Nothing there can be compiled to wasm, and
+  that is just as true for a Linux or macOS build; it is not a browser problem.
+* Every entry point sits behind `#ifdef _IMMERSION`. Building without it is a first-class
+  configuration of the shipped source, and it is the one we use.
+* `CL_InitFF()` reads `Cvar_Get( "use_ff", "0", CVAR_ARCHIVE )` and shuts the subsystem down
+  unless that is set **and** `FF_Init()` finds hardware — so force feedback is off in a stock
+  retail install.
+
+A player here gets exactly what a player gets on a stock retail install with no TouchSense
+device. Not outstanding work.
+
+
+### The per-map module re-instantiation leaks, measured — and the obvious fix is unsafe
+
+`sys_emscripten/idt3_dlopen.c` says the superseded instance's code and table entries leak, and
+calls that "bounded by how rarely maps restart". A campaign is 34 map loads, so it is worth a
+number rather than an adjective. `map-sweep.mjs` now reports wasm linear memory and function-table
+size per map, and eight consecutive loads of one map give:
+
+```
+table=8947  9007  9067  9127  9187  9247  9307  9367      (+60 per map load, monotonic)
+```
+
+Sixty function-table entries per map, plus one retained `WebAssembly.Instance` of the ~2MB side
+module each time — the latter never shows in `HEAPU8`, because side-module code lives in JS
+objects, not the linear memory. Linear memory itself stays flat at the 512MB initial allocation.
+
+**Tried, and reverted.** Replacing `idt3_dlopen_fresh()` with a plain `dlopen()` in
+`Sys_GetGameAPI()` removes the growth completely — table pinned at 8947 across eight loads — and
+JKA survived eight consecutive loads of `t1_sour`, which is also the regression test for the
+misc-model cache. But **JK2 then could not load the same map twice**: `kejim_post` loaded once and
+every reload afterwards came back `loaded=false active=false`, silently, with no engine error.
+
+That is a direct contradiction of the address measurement recorded above, which showed the cgame
+statics being reset on a fresh instance while gameplay stayed on instance #1 — if the fresh
+instance really were unused, dropping it could not break anything. Something in the JK2 load path
+does depend on it. Correctness wins: the re-instantiation stays, and the leak stays with it, now
+quantified instead of hand-waved.
+
+Anyone revisiting this should start from that contradiction rather than from the leak. A likely
+next step is checking whether `dlsym()` on the fresh handle resolves per-instance or through
+emscripten's flat namespace — note that the changing `dllEntry` address across loads does **not**
+prove per-instance resolution, because emscripten allocates a new table slot on every `dlsym` of
+the same function.
+
+
+## Long-session behaviour, measured (2026-08-19)
+
+Two failure modes, tested separately because they fail differently.
+
+### Loading a whole campaign: no leak, but two avoidable stalls (fixed)
+
+`map-sweep.mjs` now reports wasm linear memory and function-table size per map. Across all 34 JKA
+campaign maps in one session the heap was a **step function, not a slope**:
+
+```
+512.0MB  x17 maps ... -> 614.4MB at t2_rancor ... -> 737.4MB at vjun3 ... flat to the end
+```
+
+Eight consecutive loads of a single map hold perfectly flat, so those steps are
+`ALLOW_MEMORY_GROWTH` high-water marks for two big maps, not a per-map leak. But each step is an
+ArrayBuffer realloc + copy with every HEAP view rebuilt — precisely the stall `INITIAL_MEMORY`
+exists to prevent, and `env.sh` had picked 512MB on the belief that "the common desktop scenes
+never grow". The campaign disproves that.
+
+`INITIAL_MEMORY` is now **768MB**, which clears the measured peak with headroom. Re-running the
+full campaign: **34/34 maps, heap constant at 768.0MB, zero growth events.**
+
+A hypothesis this also killed: `t2_rancor` was both the first heap-growth map *and* the map that
+reports the stray `glGetError() = 0x500`, which made a realloc-disturbs-GL-bookkeeping story look
+attractive. With the reallocs gone the `0x500` is unchanged, so that correlation was coincidence.
+Another eliminated candidate for that line.
+
+The one genuine growth that remains is the function table, +60 entries per map load from the
+per-map module re-instantiation — quantified and explained in its own entry above, where the
+obvious fix is also shown to be unsafe.
+
+### Sitting in one map: `soak.mjs`
+
+The sweep answers "does a campaign load"; it cannot see a per-frame leak or a render list that
+grows while the map state is static. `soak.mjs` sits in one map and samples frame rate, draws per
+frame, heap and table size per window, printing the trend rather than an average that would hide
+it, and comparing the first third of the run against the last.
+
+Results, 8-minute runs, each game soaked alone:
+
+| | JKA (`t2_rogue`) | JK2 (`artus_mine`) |
+|---|---|---|
+| fps, first third -> last third | 42.3 -> 43.1 (**up 1.9%**) | 122.1 -> 124.4 (**up 1.9%**) |
+| draws/frame | constant ~726 | constant ~112 |
+| heap growth | **0.0MB** | **0.0MB** |
+| function-table growth | **0 entries** | **0 entries** |
+| verdict | STABLE | STABLE |
+
+Zero heap growth, zero table growth and a flat draw count over eight minutes of continuous play:
+there is no per-frame leak in either engine, and the +60-entries-per-map table growth documented
+above really is per-*map-load*, not per-frame.
+
+**The tool was wrong before it was right, in a way worth recording.** The first JKA soak reported
+`fps first third 42.4 -> last third 37.6 (down 11.4%)` and flagged `CHECK THE TREND ABOVE`. That
+decay did not exist. The first sample window opened the moment the client reached `CA_ACTIVE`,
+while the scene was still populating -- it read `fps=67.8` at **`draws/frame=345`**, against a
+steady state of ~37fps at ~726 draws/frame. Averaging a half-loaded frame into the baseline
+manufactured an 11.4% "decay" out of a session that was flat.
+
+The give-away was in the output all along: fps and draws/frame move together. A real
+degradation shows fps falling while the draw load stays put; a warm-up artifact shows both
+climbing to a plateau. So the trend judgement now discards leading windows until the *draw load*
+settles (within 10% of the previous window) rather than trusting elapsed time, and says how many
+it dropped. Same session, corrected: **up 1.9%**.
+
+A second, smaller bug in the same fix, caught before it could mislead: `steady` is the index of
+the first window that *matches* its predecessor, so the predecessor was already at full draw load.
+Trimming `steady` windows threw away a good sample; it trims `steady - 1`.
+
+## The Brightness slider did nothing (2026-08-19)
+
+`GLimp_SetGamma` was an empty function and `glConfig.deviceSupportsGamma` was hard-coded
+`qfalse`, on the reasoning that WebGL has no gamma-ramp API. Both engines therefore fell back to
+the renderer's *software* gamma path, which bakes the ramp into every texture at upload time
+(`R_LightScaleTexture`, tr_image.cpp:384). The Brightness control in the menus is a plain
+`cvarfloat "r_gamma" 1 .5 3` (setup.menu / ingamesetup.menu) with no restart attached, so nothing
+ever reloaded the textures and **dragging the slider had no effect at all** until something else
+happened to trigger a `vid_restart`.
+
+Measured before the fix, with the world frozen at `timescale 0` and a no-change control to
+separate real effect from frozen-frame drift:
+
+```
+control (no change)             luma 21.73 -> 25.37   drift +3.64
+after "r_gamma 3", no restart   luma 21.73 -> 25.24   delta +3.52   <- i.e. nothing
+after vid_restart               luma 21.73 -> 51.50   delta +29.77
+```
+
+### The fix: a gamma ramp is a compositor stage, and the browser has one
+
+A hardware gamma ramp is not a rendering feature. It is a per-channel lookup applied to the
+finished framebuffer on the way to the display, after everything has been drawn. The browser has
+that exact stage and that exact primitive: an SVG `feComponentTransfer` with `type="table"` is an
+arbitrary 256-entry per-channel LUT applied by the compositor to the canvas. So `GLimp_SetGamma`
+now hands the engine's table straight to it, unaltered, and `deviceSupportsGamma` is decided the
+way `WG_CheckHardwareGamma()` (win_gamma.cpp:24) decides it -- including honouring
+`r_ignorehwgamma`. The original's other two checks have no analogue here: there is no prior ramp
+to read back for a sanity check, and no crashed-with-bad-gamma state to repair.
+
+An identity ramp removes the filter entirely rather than paying for a compositor pass that cannot
+change a pixel -- `r_gamma` defaults to 1, so the default build composites exactly as before.
+
+Verified, again against a control:
+
+```
+after "r_gamma 3", no restart   JKA luma 21.48 -> 46.38  (drift +3.28)
+                                JK2 luma 16.03 -> 51.46  (drift +5.17)
+fps with LUT filter 124.9  vs  124.8 without   -- no measurable cost
+```
+
+Ordering was already correct for the switch: `R_Register()` registers `r_ignorehwgamma`
+(tr_init.cpp:1398), `InitOpenGL()` runs at :1409, and `R_InitImages()` only uploads at :1411.
+`tr.overbrightBits` is unaffected, because `R_SetColorMappings` also zeroes it when
+`!isFullscreen` and a canvas is never fullscreen -- it stays 0 either way, the same value a
+The renderer's own report changed to match, which is the same kind of correction as the
+`Dynamic Glow: disabled` line: `GfxInfo_f` now prints **`GAMMA: hardware w/ 0 overbright bits`**
+instead of the software-gamma line, because that is now true. Every other consumer of the flag
+was checked and none of them change behaviour here -- engine screenshots gamma-correct only when
+`tr.overbrightBits > 0` (tr_init.cpp:528, :558), which stays 0 windowed, and the levelshot path
+(:650) now bakes gamma in exactly as it does on a desktop with a ramp.
+
+windowed desktop run gets. Boot, map load, movement and save/load are unchanged, and the default
+appearance is identical: at `r_gamma 1` the table is the identity, so the software path was baking
+an identity too.
+
+### Two measurement traps this walked into, both worth remembering
+
+**A CSS filter is invisible to `drawImage(canvas)`.** The first cost/correctness experiment
+sampled luma by drawing the canvas into a scratch 2D canvas -- which reads the canvas *backing
+store*, not the composited page. It reported an all-white ramp as luma 24.4 and an all-black ramp
+as 25.1, i.e. "the filter does nothing", and the fps figure taken alongside it was equally
+meaningless. Sampling `Page.captureScreenshot` instead gave all-white 254.6 and all-black 0.1.
+Anything that measures a compositor effect has to measure composited output.
+
+**Luma is not linear under a gamma curve.** After the fix, `vid_restart` appeared to *double* the
+gamma: filtered luma went 46.4 before the restart to 100.8 after, while the gamma-1 control moved
+only 21.5 -> 29.0. Reasoning linearly, that looked exactly like textures being baked *and* the
+filter applied. They were not: stripping the filter after the restart gave 28.6, matching the
+gamma-1 control's 29.0 almost exactly, so the textures were clean. The scene itself is simply
+brighter after a restart (the world runs unfrozen for ~18s while the renderer comes back), and a
+1/3-power curve amplifies a shift in a mostly-dark scene enormously. The check that settled it was
+removing the filter and re-measuring -- not any amount of further arithmetic.
+
+
+## RoQ cinematics: verified, and the build comments were describing a build that no longer existed
+
+The story cutscenes had never been tested. `assets0.pk3` carries **14 RoQ videos in JKA**
+(`video/ja01`..`ja12` -- the chapter intros -- plus `jk0101_sw` and `openinglogos`) and **15 in
+JK2** (`jk0101`..`jk09`, the Mon Mothma briefing set, `openinglogos`, `outcast`). Nothing in the
+suite touched them: map sweeps, saves and movement all skip the `CA_CINEMATIC` path entirely.
+
+They also *looked* excluded. Both build scripts still carried comments from the first link saying
+cinematics (and, in JK2's case, the whole sound stack) were "excluded/stubbed" -- but the actual
+filters had long since narrowed to `ff/` for JKA and `encryption/` for JK2, so `client/cl_cin.cpp`
+was in fact being compiled and linked all along. `sys_jk_stubs.cpp` said so; the build scripts
+contradicted it. Comments corrected in both.
+
+`verify-cinematic.mjs` plays a list of videos in one session and, per video, requires:
+`CA_CINEMATIC` reached, the picture to genuinely **change** (16x16 luma signature sampled at 2Hz
+-- a cinematic can hold one decoded frame forever, or run its clock without presenting, and a
+single screenshot cannot tell), a non-black peak, the audio play cursor to advance, and no errors.
+Audio matters on its own: RoQ carries its own `ZA_SOUND_MONO`/`ZA_SOUND_STEREO` chunks decoded by
+`RllDecode*ToStereo` into snd_dma's raw-sample ring, and nothing else in the suite exercises that
+ring.
+
+Result: **JKA 14/14, JK2 15/15**, every one decoding, animating and audible (audio peak
+0.47-0.49). Per-video log attribution uses `###IDT3CIN <name>` markers and cuts from the *last*
+occurrence, because the log ring is capped and shifts -- the same trap that once made map 1's
+output appear under map 15 in `map-sweep.mjs`.
+
+One correction along the way: the first version called a `stopcinematic` command between videos.
+No such command exists -- only `cinematic` and `ingamecinematic` are registered (cl_main.cpp:1285).
+None is needed either: `PlayCinematic()` calls `SCR_StopCinematic()` itself before starting the
+next one. The harness now sends ESC instead, which is the player's own stop path
+(cl_keys.cpp:1352).
+
+## The movement probe was still guessing from pixels, and it was wrong in both directions
+
+`verify-jk-move.mjs` had already been changed to ask the engine whether the player is in control
+(`cls.state == CA_ACTIVE`, no key-catcher) instead of inferring it from the picture. The *second*
+half of the question -- did the player actually move -- was still a periphery pixel diff: hold W,
+and call it movement if the frame changed much more than it does standing still.
+
+That metric fails on real maps, in both directions, and both failures were reproduced:
+
+| | IDLE | W-HELD | pixel verdict | engine `viewpos` |
+|---|---|---|---|---|
+| JKA `t1_sour` | 53.8% | 29.3% | NO/UNCLEAR | **moved 280.0 units** |
+| JK2 `kejim_post` | 0.0% | 0.1% | NO/UNCLEAR | **moved 126.0 units** |
+
+JKA's opening map animates constantly -- vines, water, foliage -- so *standing still* already
+repaints half the periphery and nothing the player does can stand out against it. JK2's is a dim
+interior where 2.5 seconds of running barely changes a pixel. One map is too noisy for the test,
+the other too quiet, and both reported a healthy build as broken.
+
+So the probe now finishes the job it started and asks the engine for the answer too: `viewpos`
+(cg_consolecmds.cpp, registered in both engines) prints `<map> (x y z) : yaw` straight from
+`cg.refdef.vieworg`. Hold W between two of those and the distance is a direct measurement that no
+amount of ambient animation can fake or hide. The pixel heuristic is kept only as a fallback and
+is labelled `(pixels only)` when it is what decided.
+
+**The control gate still has to come first, and this proved why.** Run against JK2 without enough
+rounds to clear `kejim_post`'s ~70s opening camera, `viewpos` reported **2499 units** of
+"movement" -- the scripted camera flying through the level while the player had no control at all.
+Distance alone would have printed a confident YES. Because `!ctrl` is checked before the distance,
+it printed `UNCONFIRMED (never reached player control -- raise [rounds])`, which was exactly
+right; with `[rounds] 70` the same map then reported `YES (engine: moved 126.0 units)`.
+
+Both games, current build: **JKA 280.0 units, JK2 126.0 units, MOVED: YES** -- and savegame
+round-trip (save -> reload the page -> load) **PASS** for both.
+
+## Verification status after the gamma and cinematic work (2026-08-19)
+
+Everything re-run on the rebuilt binaries, because the gamma change touches renderer
+initialisation and had to be shown not to disturb anything else.
+
+| check | JKA | JK2 |
+|---|---|---|
+| build | 0 errors, 0 warnings | 0 errors, 0 warnings |
+| boot console | 0 errors, 0 warnings | 0 errors, 4 retail-content warnings |
+| campaign sweep | **34/34 maps**, heap flat at 768.0MB | **26/26 maps** |
+| cinematics | **14/14** decoded, animated, audible | **15/15** decoded, animated, audible |
+| movement (engine `viewpos`) | **YES**, 280.0 units | **YES**, 126.0 units |
+| savegame round-trip | **PASS** | **PASS** |
+| 8-minute soak | STABLE, +1.9%, 0 leak | STABLE, +1.9%, 0 leak |
+| audio backend | cursor advancing, peak 1.00 | cursor advancing, peak 0.86 |
+| Brightness slider | works live (21.5 -> 46.4) | works live (16.0 -> 51.5) |
+
+Across the whole 34-map JKA campaign the engine emitted exactly **two** distinct complaints:
+`WARNING: reused image gfx/sprites/y_grass_tall with mixed glWrapClampMode parm`, which is retail
+content referencing one image with two clamp modes and is printed by the original too, and the
+long-standing informational `glGetError() = 0x500` documented above (retail ships
+`r_ignoreGLErrors "1"`, so nothing ever reads it on the desktop either).
+
+## Ghoul2 characters and entity rendering, finally measured (2026-08-19)
+
+`verify-character.mjs` was the only thing covering characters, and it asserted nothing -- it wrote
+three screenshots, printed their byte sizes and exited 0 whatever happened, and its map detection
+was the old kind that reports `map t1_sour NOT-DETECTED` on a healthy boot (console-check.mjs was
+fixed for that by matching a `loaded \d+ faces` marker; verify-character.mjs never was). Its
+header still described "the MDS character-render fixes" and defaulted to the RTCW map `escape1`:
+it was carried over from the Wolfenstein work and never adapted to the JK engines. So "do
+characters load and render" was open.
+
+`verify-models.mjs` answers both halves from engine state, and **`verify-character.mjs` has been
+deleted** -- a harness that asserts nothing is worse than no harness, because the suite then looks
+like it covers something it does not.
+
+**Did they load?** `modellist` (R_Modellist_f) walks `tr.models` and prints one line per model,
+labelling failures `MOD_BAD`. Ghoul2 is identifiable by extension: `.glm` mesh (MOD_MDXM), `.gla`
+skeleton (MOD_MDXA). JKA yavin1 loads 26 meshes and 5 skeletons; JK2 artus_mine likewise.
+
+**MOD_BAD is not a failure, and asserting on it was wrong.** Every MOD_BAD line either game
+produced was checked against the mounted retail pk3s -- all ten of them
+(`models/players/player/model.glm`, `models/weapons2/noweap/noweap_w.glm`,
+`models/players/mouse/lower.mdr`, and so on) are present in **no retail pk3 at all**. The engine
+probes for optional assets, misses, and caches the miss; a desktop install does exactly the same.
+They are listed (a *new* one appearing would be worth knowing) but never failed on.
+
+**Are they drawn?** This took three instruments, and the two failures are the interesting part.
+
+* *Frozen-frame pixel A/B* (the cvar-ab technique): unusable on these maps. t1_sour reported an
+  80.3% "entity contribution" against a 79.8% noise floor; yavin1 22.2% against 29.7%. The scene
+  drifts on its own by as much as the cvar changes it, and `timescale 0.01` did not hold it
+  either -- 23.8% drift between two idle captures. The first version printed **PASS** off those
+  numbers, which is worse than failing. The residual is a gate now, not a footnote.
+* *`r_speeds 1`*: every line, once per frame, read `1/1 shdrs/srfs 0 leafs 4 vrts 2/2 tris` -- one
+  quad. `R_PerformanceCounters` (tr_cmds.cpp:107) prints and *then* memsets, immediately before
+  `RB_ExecuteRenderCommands`; when the 3D batch has already been flushed by `R_SyncRenderThread`
+  earlier in the frame, the print only ever covers the trailing 2D flush.
+* *GL draw calls per frame* -- the instrument soak.mjs already uses. Exact, per-frame, and nothing
+  ambient can imitate it.
+
+Result, toggling `r_drawentities` on a settled scene:
+
+| | entities on | entities off | from entities |
+|---|---|---|---|
+| JKA `yavin1` | 271.6 draws/frame | 119.3 | **152.2** |
+| JK2 `artus_mine` | 99.7 draws/frame | 83.5 | **16.2** |
+
+### `CA_ACTIVE` does not mean the world is on screen
+
+The sharpest lesson, and it has now bitten three different probes. Measured with soak.mjs on JKA
+yavin1: draws/frame sits at **2** -- one quad, at 125fps -- for the first **ninety seconds** while
+the opening scripted sequence runs, and only then jumps to 204. Sampling 12s after `CA_ACTIVE`
+measured that blank window and concluded "entities are not reaching the renderer" on a build that
+was fine. JK2's `kejim_post` has the same shape behind its ~70s text crawl, which is also why the
+movement probe needs `[rounds] 70` there.
+
+A bare threshold is not enough either: kejim_post crossed ">20 draws/frame" at 31 while still in
+its opening, and at that moment entities-off measured 2 -- the world itself was not being drawn.
+The probe now waits for the draw rate to **plateau** (two consecutive readings within 20%) before
+measuring anything, and says so in its output.
+
+One genuine map quirk this surfaced, worth not misreading: on `kejim_post` the settled scene is 31
+draws/frame and drops to 2 with entities off, i.e. the world contributes almost nothing -- the
+opening view is very nearly all culled. `artus_mine` on the same build gives the normal profile
+(83.5 world + 16.2 entities), which is what shows the world path is healthy.
+
+## Combat/death and the menu layer, and a false alarm I should not have raised (2026-08-19)
+
+Two subsystems closed, and one wrong conclusion recorded in full because the way it went wrong is
+more useful than the result.
+
+### Death and respawn: `verify-combat.mjs`
+
+Nothing in the suite ever applied damage, so the whole G_Damage -> player_die -> respawn/reload
+chain had never run in a browser. The probe gives the player everything, kills them with the game
+module's own `kill` client command, and watches engine state.
+
+Preconditions matter more than the assertion here, and each one was added because its absence made
+a result meaningless:
+
+* **Does the cheat channel even work?** `god` replies "godmode ON" through `gi.SendServerCommand`,
+  so it proves console -> CL_ForwardCommandToServer -> ClientCommand end to end. Without it a
+  silent `kill` is ambiguous between broken death and a command that never arrived. (It is toggled
+  twice so it ends OFF; `Cmd_Kill_f` clears FL_GODMODE itself anyway.)
+* **Is the view actually the player's?** On JKA t1_sour, with no input at all, `viewpos` moved
+  **2950 units in ten seconds** -- the opening camera, still flying long after the draw rate had
+  plateaued. Any "the position changed, so they respawned" claim measured in that window is
+  measuring the camera. The probe now waits for viewpos to hold still (drift < 32 units over 5s)
+  and refuses to report at all if it never does.
+
+Both games pass twice consecutively: view settled to 0.0 units drift, `kill` relocates the player
+far beyond that control, the client returns to CA_ACTIVE, no errors.
+
+### Menus: `verify-menu.mjs`
+
+The UI was the last subsystem with no coverage -- every other probe boots with `+devmap` and
+treats the menu as an obstacle. `idt3_client_state` already returns
+`cls.state | (cls.keyCatchers << 8)`, and KEYCATCH_UI is bit 1, so who owns input is readable
+directly with no pixel guessing.
+
+Both games, on the real player path (boot to main menu -> `devmap` -> play):
+
+| | JKA `t1_sour` | JK2 `artus_mine` |
+|---|---|---|
+| main menu at boot | keyCatchers=2, state=1 | keyCatchers=2, state=1 |
+| in gameplay | keyCatchers=0 | keyCatchers=0 |
+| ESC opens in-game menu | yes (screen changes 89%) | yes (85%) |
+| ESC closes it | yes | yes |
+| `uimenu` opens it | yes | yes |
+| still works after a 2nd map load | yes | yes |
+
+### The false alarm: "the pause menu is broken" -- it is not
+
+For a while I had this recorded as a confirmed, serious defect: ESC and `uimenu` both did nothing
+after the first map load of a session, in both games, reproducibly. The reasoning was sound as far
+as it went. `UI_SetActiveMenu` (ui_atoms.cpp) opens with
+
+```c
+if (cls.state != CA_DISCONNECTED && !ui.SG_GameAllowedToSaveHere(qtrue))
+    return;
+```
+
+which ends in the game module's `GameAllowedToSaveHere() == (!in_camera && !killPlayerTimer)`, and
+`in_camera` is a cgame static that nothing in the original ever resets -- because on PC the module
+is a DLL reloaded per map and starts false for free. That is exactly the shape of the two real
+bugs already fixed this way (`num_roffs`, `MiscEnts`), so it looked like a third.
+
+Three things disproved it:
+
+1. Switching to a plain `dlopen` -- removing the duplicate instances entirely -- changed nothing.
+   So the duplicate-instance story was not the mechanism.
+2. Adding `in_camera = false; killPlayerTimer = 0;` to `InitGame()` made it *worse*: the first map
+   load started failing too. A "fix" that breaks the working case is not fixing the thing.
+3. The decisive one: the same build, with the same flags, **failed one run and passed the next**.
+   The behaviour was never deterministic; I had been reading a flaky signal as a reproducible one
+   because every run I had looked at happened to land the same way.
+
+What is actually going on: the engine refuses the in-game menu whenever a scripted camera is
+active, deliberately, and `t1_sour` runs its opening script in *segments*. The view can sit
+perfectly still -- 0.0 units of drift over five seconds -- while a camera is still logically
+running, so "the view settled" is not the same question as "the game will let you pause". A single
+ESC press at an arbitrary moment therefore answers a coin flip.
+
+The probe now does what a player does: presses ESC again. On JKA t1_sour it takes **17 presses**
+(about 85 seconds) before the opening script releases and the menu opens; on JK2 artus_mine, 3.
+Only a menu that never opens across the whole window is a failure. Both engine experiments were
+reverted -- the game modules and `Sys_GetGameAPI` are exactly as they were.
+
+The lesson is the one this log keeps relearning in new clothes: a probe that samples a system at
+one arbitrary instant will eventually report the engine's correct behaviour as a bug. Every
+gate added this session -- draw-rate plateau, viewpos settling, ESC retries -- exists because a
+single-shot reading lied.
+
+## Scripted level transitions — the campaign's own path between maps (2026-08-19)
+
+`map-sweep.mjs` loads maps back to back with `map`, and that is emphatically **not** how the
+campaign moves between levels. `SV_Map_f` does `Cvar_Set(sCVARNAME_PLAYERSAVE, "")` on purpose,
+with a comment saying so: typing `map` must not preserve weapons and ammo from a level you never
+really exited. The real path is a `target_level_change` entity -> `G_ChangeMap()` (g_utils.cpp) ->
+the `maptransition` / `loadtransition` console commands -> `SV_MapTransition_f`, which calls
+`SV_Player_EndOfLevelSave()` first. So thirty-four map loads per sweep had never once exercised
+the transition machinery or the state hand-off.
+
+`verify-transition.mjs` drives the engine's own commands and reads the engine's own answers:
+
+* **which map is loaded** — `viewpos` prints `maps/<name>.bsp (x y z) : yaw`, so it is what the
+  client is rendering, not what we asked for;
+* **what was carried** — `SV_Player_EndOfLevelSave` serialises the player into the `playersave`
+  and `playerammo` cvars, and `cvarlist <name>` prints them back as `<flags> <name> "<value>"`.
+  Field 2 of `playersave` is `stats[STAT_WEAPONS]` (sv_ccmds.cpp).
+
+| | JKA | JK2 |
+|---|---|---|
+| transition | `t1_sour` -> `t1_danger` | `kejim_post` -> `kejim_base` |
+| engine reports arriving on | t1_danger | kejim_base |
+| weapons carried | **16383** (all, from `give all`) | **16383** |
+| ammo carried | `0 100 300 300 400 10 999 10 5 5` | same |
+| then a plain `map` | `t1_fatal`, weapons **3** | `artus_mine`, weapons **8197** |
+
+Both halves matter. Without the plain-`map` contrast the first assertion proves nothing — it would
+pass whether or not the transition did anything.
+
+### Two wrong assertions on the way, both mine
+
+**"playersave must be empty after a plain map."** It is cleared by `SV_Map_f`, but the engine
+repopulates it during the new level, so by the time the map has settled it reads
+`100 100 3 ...` again. Testing emptiness therefore failed a working engine. The content is what
+distinguishes the two paths — 16383 carried versus a default spawn — so that is what is asserted.
+
+**A ">20 draws/frame" floor for "playable".** JK2's `kejim_base` settles at **14** and
+`kejim_post` at **31**, because those opening views are almost entirely culled; the probe called a
+perfectly good transition "never reached playable gameplay" while the engine was reporting the
+right map and the carried inventory sat in `playersave`. The floor that is actually justified is
+**2**: a client drawing nothing at all measures exactly 2 draws/frame — one screen quad — as
+measured on JKA yavin1 during its ninety-second opening sequence. Anything above that is a real,
+if sparse, scene.
+
+## Coverage, restated (2026-08-19)
+
+The completion bar used from here on: **a subsystem counts as verified when a harness asserts on
+engine-reported state, not on pixels.** By that bar the suite now covers:
+
+| subsystem | harness | asserts on |
+|---|---|---|
+| build | build-jka.sh / build-jk2.sh | 0 errors, 0 warnings |
+| boot + console hygiene | console-check.mjs | engine log ring |
+| campaign map loading | map-sweep.mjs | per-map load/active, heap, wasm table |
+| long-session stability | soak.mjs | fps trend, heap, table, draws/frame |
+| RoQ cinematics | verify-cinematic.mjs | CA_CINEMATIC, frame change, audio cursor |
+| movement | verify-jk-move.mjs | `viewpos` displacement |
+| savegames | verify-jk-save.mjs | save file survives reload, load reaches gameplay |
+| models + Ghoul2 + entity rendering | verify-models.mjs | `modellist`, GL draws/frame with r_drawentities |
+| damage / death / respawn | verify-combat.mjs | `god` reply, `viewpos`, cls.state |
+| menus / UI | verify-menu.mjs | `cls.keyCatchers` (KEYCATCH_UI) |
+| scripted level transitions | verify-transition.mjs | `viewpos` map name, `playersave`/`playerammo` cvars |
+| gamma / Brightness | (in-tree, measured) | composited luma vs a no-change control |
+| audio backend | audio-test.mjs | AudioContext play cursor + peak |
+
+Deliberately out of scope, with reasons recorded above: multiplayer (neither GPL drop ships an MP
+tree — JKA has only `starwars.vcproj`, JK2 only `starwars.dsp`/`game.dsp`, and CLAUDE.md scopes
+net work to M4 Wolf:ET + RTCW-MP), force feedback (a Win32 binary blob, off by default in retail),
+and dynamic glow (the engine's own hardware gate declines it, exactly as it did on a GeForce 2).
+
+The one recurring theme worth carrying forward: **every gate in these harnesses exists because a
+single-shot reading lied.** Draw-rate plateau, viewpos settling, ESC retries, warm-up window
+discards, composited-output sampling — each was added after a probe confidently reported correct
+engine behaviour as a bug, or the reverse. When a new probe disagrees with the engine, suspect the
+probe first; that has been right every time so far.
+
+## Final campaign runs, and the warnings checked rather than waved through (2026-08-19)
+
+Both campaigns re-run end to end on the binaries as they stand:
+
+| | JKA | JK2 |
+|---|---|---|
+| maps | **34/34 OK, 0 FAILED** | **26/26 OK, 0 FAILED** |
+| wasm heap | flat 768.0MB throughout | flat 768.0MB throughout |
+| function table | +~60/map (documented, module re-instantiation) | 8312 -> 9887 over 26 maps, same rate |
+| distinct engine complaints | 2 | 17 |
+
+Boot: JKA 0 errors / 0 warnings; JK2 0 errors and 4 warnings.
+
+**The complaints were verified, not assumed.** "Retail content is just like that" is the easy
+answer and it is worth exactly nothing unless checked -- if those files existed in the pk3s and
+the port could not find them, it would be a virtual-filesystem bug wearing the same message. So
+every named asset was looked up in the mounted retail archives:
+
+```
+gfx/2d/crosshairj              ABSENT from every pk3
+icons/w_icon_turret            ABSENT from every pk3
+icons/w_icon_turret_na         ABSENT from every pk3
+textures/tests/floor02_alphac  ABSENT from every pk3
+scripts/yavin_canyon/fly_overs4.IBI    ABSENT from every pk3
+scripts/yavin_courtyard/console.IBI    ABSENT from every pk3
+gfx/hud/w_icon_atst            PRESENT (w_icon_atst.tga)
+gfx/hud/w_icon_atstside        PRESENT (w_icon_atstside.tga)
+```
+
+The two that are PRESENT are not "could not find" warnings at all -- they are
+`reused image ... with mixed glWrapClampMode parm`, i.e. one image referenced by two shaders with
+different clamp settings, which is a content-authoring issue and not a lookup failure.
+`item_shield doesn't have a spawn function` is likewise literal: there is no `item_shield` spawn
+entry in the game source, so a map referencing it gets exactly that message on any platform. The
+port therefore finds everything that exists and complains only about what does not -- which is the
+behaviour a desktop install has.
+
+This is the same standard applied earlier to the `MOD_BAD` model list, where all ten entries also
+turned out to be absent-from-retail probes. Both times the check was cheap and both times it
+turned an assumption into a fact; the outcome would have been a real bug report if either had
+come back PRESENT.
+
+## The per-map module leak: root cause found, fix rejected, one real bug fixed (2026-08-19)
+
+The `+60 wasm function-table entries per map load` growth has been documented here for a while,
+along with an unresolved contradiction: replacing `idt3_dlopen_fresh()` with a plain `dlopen`
+removes the growth entirely, JKA seemed fine, but **JK2 could not load the same map twice** and it
+failed "silently". That contradiction is now closed on every point.
+
+### It was never silent -- nobody was listening
+
+`map-sweep.mjs` drains the engine's log ring. The failure never touched it, because it was a
+**JavaScript-level exception**, not an engine error. Capturing `Runtime.exceptionThrown` over CDP
+showed the client stalling at `CA_CONNECTED` with an uncaught `RuntimeError`, and rebuilding the
+side module with `--profiling-funcs` turned the anonymous `$func1904` frames into names:
+
+```
+RuntimeError: memory access out of bounds
+  CNavigator::GetNearestNode(gentity_s*, int, int, int)
+  NAV_FindClosestWaypointForPoint(float*)
+  CP_FindCombatPointWaypoints()
+  InitGame(char const*, char const*, int, ...)
+  SV_InitGameProgs -> SV_SpawnServer -> Cmd_ExecuteString -> Cbuf_Execute
+```
+
+### The bug: `CNavigator::Free()` leaves a vector full of dangling pointers
+
+```c
+void CNavigator::Free( void ) {
+    node_v::iterator ni;
+    STL_ITERATE( ni, m_nodes ) { delete (*ni); }   // ... and that is the whole function
+}
+```
+
+It deletes every `CNode` and never clears `m_nodes`. On PC that is harmless *by luck*:
+`NAV_Shutdown()` runs from `ShutdownGame()` and the game DLL is unloaded immediately afterwards,
+so the vector dies with it. A side module that is never unloaded keeps the dangling pointers --
+and `Load()` **appends** (`STL_INSERT`) rather than replacing, so the next map ends up indexing the
+previous map's freed nodes. `GetNearestNode` then does `m_nodes[id]->GetPosition(...)` on freed
+memory. `m_edgeLookupMap` is filled the same way.
+
+Fixed: `Free()` now clears both containers -- exactly the state a module reload gives on PC. This
+is kept regardless of the dlopen question, because it is a genuine use-after-free.
+
+With it, JK2 under plain `dlopen` completed **26/26 maps with the function table pinned at 8312**
+for the whole campaign (previously 8312 -> 9887).
+
+### ...and the fix was still rejected
+
+Two measurements killed it:
+
+* **JKA, full campaign under plain `dlopen`: 17 of 34 maps FAILED.** The earlier "JKA survived 8x
+  t1_sour" was one map repeated, not a campaign, and it did not generalise at all.
+* JK2's in-game menu stopped opening after a map reload once re-instantiation was removed.
+
+So `idt3_dlopen_fresh()` stays, and the table growth stays with it as a *bounded, measured* cost:
++60 entries per map load, with wasm linear memory flat at 768.0MB across a whole campaign. Trading
+half a working campaign for a smaller function table is not a trade.
+
+What is now known, and was not before: the growth is not the disease, it is the treatment. The
+engines rely on module unload for cleanup in more places than the three found so far
+(`num_roffs`, `MiscEnts`, and now `CNavigator::m_nodes`). Anyone attacking this again should start
+by hunting the remaining ones with `--profiling-funcs` and CDP exception capture, which is what
+finally made this one visible in minutes rather than sessions.
+
+
+## OPEN: JK2's in-game menu after a second map load is intermittent
+
+This entry has been wrong twice, in opposite directions, and the measurements are recorded so the
+next person does not make it a third time.
+
+* First it was reported as **verified working**, on the strength of one passing sample.
+* Then, after three consecutive failures, it was reported as **failing consistently**.
+
+Neither is true. Across six samples on the shipping build (`artus_mine`, `verify-menu.mjs` with
+`SECOND_MAP=1`): **2 pass, 4 fail**. The first map load of a session opens the in-game menu
+reliably, after ~3 ESC presses. After a second map load in the same session it sometimes opens and
+sometimes never does -- and "never" survives a **60-attempt, ~5-minute** retry window, so it is not
+merely slow.
+
+### What is established
+
+`save` run at the moment the menu is refused produces **no output at all**. That is the tell:
+`SG_WriteSavegame` starts with
+
+```c
+if ( !qbAutosave && !SG_GameAllowedToSaveHere(qfalse) ) return qfalse;   // silent
+```
+
+so silence means the predicate is false, i.e. `in_camera || killPlayerTimer` is genuinely true.
+The same predicate is what `UI_SetActiveMenu` consults, so the menu refusal is the engine doing
+exactly what it is written to do. The question is not why the menu refuses -- it is why a camera
+is still logically active five minutes after a map reload, when the same map's first load released
+it in seconds.
+
+### Ruled out, each by measurement rather than argument
+
+* **Module-loading strategy.** Reproduces identically under `idt3_dlopen_fresh` and plain `dlopen`.
+* **The `CNavigator::Free()` use-after-free fix.** Removed it, rebuilt, still reproduces.
+* **`in_camera` / `killPlayerTimer` themselves.** Resetting both from `InitGame()` -- via a
+  cgame-side helper restoring static-init state, deliberately not `CGCam_Disable()` (which starts a
+  bar fade, reassigns `g_entities[0].contents` and sends a "cts" server command, none of which
+  belongs at map init) -- did not fix it. That change was reverted rather than left in on a hunch.
+
+### Where to look next
+
+The flag is set by `CGCam_Enable` and cleared by `CGCam_Disable`, both driven by the map's ICARUS
+script. `ShutdownGame` does call `ICARUS_Shutdown()`, so the suspicion is script-engine state that
+survives it and leaves the second run of the opening sequence unable to reach its camera-disable
+step. The intermittency points at a race rather than a hard stale value.
+
+JKA passes the same test repeatedly (17 ESC presses on the first load, then fine after the
+reload), so whatever this is, it is JK2-specific.
+
+### What the diagnostic finally showed
+
+A temporary `idt3dbg` client command was added to the game module to print the two halves of the
+predicate, then removed again. In a failing second load it reports:
+
+```
+IDT3DBG in_camera=1 killPlayerTimer=0
+```
+
+while `viewpos` sits at the ordinary player spawn (`3176 -3056 1186`, yaw 10) -- the same position
+a passing run reports. So a camera is flagged **on** with nothing actually driving the view: the
+menu refusal is the engine correctly honouring `GameAllowedToSaveHere()`, and the real fault is
+that `in_camera` is left set.
+
+Two further things are now established, both negative and both worth not repeating:
+
+* **The flag is set AFTER `InitGame`.** Resetting `in_camera` (and zeroing `client_camera`) from
+  `InitGame()` via a cgame-side helper -- retried under the shipping `idt3_dlopen_fresh` config,
+  with the 24-retry probe rather than the single-press one that produced earlier false readings --
+  still measured `in_camera=1` at the point of refusal, twice in a row. So this is not the stale
+  static it looks like; something enables the camera during the second load and never disables it.
+  The change was reverted rather than left in: an engine divergence that fixes nothing is a cost.
+* **The engine log is byte-identical between a passing and a failing second load**, apart from
+  timing numbers -- same `CL_InitCGame`, same `...loaded 20989 faces`, same `Com_TouchMemory`, same
+  `viewpos`. Whatever differs is not logged.
+
+Combined with the intermittency (2 pass / 4 fail over six samples, and "fail" surviving a
+60-attempt ~5-minute window), the shape is a **race in the opening cutscene's completion** on a
+second load: the sequence enables the camera and its disable step is sometimes never reached.
+`CGCam_Enable` / `CGCam_Disable` are driven by the map's ICARUS script; `ICARUS_Shutdown()` was
+audited and does release entity resources, clear `ICARUS_BufferList` and `ICARUS_EntList`, and
+delete the instance, and the `icarus/` sources carry no file-scope statics -- so the obvious
+candidate there is already ruled out.
+
+Reproduce with: `SECOND_MAP=1 node shared/wasm-build/verify-menu.mjs 8793 artus_mine`
+(add `ESC_TRIES=60` for the long window).
+
+### Root cause located: the opening cutscene never ends on a same-map reload
+
+Instrumenting `CGCam_Enable` / `CGCam_Disable` (temporarily; removed afterwards) made the whole
+thing legible in one line. A failing session, `artus_mine` loaded twice:
+
+```
+ENABLE  t=0       DISABLE t=26391      <- load 1: the opening cutscene runs and ENDS
+ENABLE  t=31141   DISABLE t=41257      <- the probe's own cam_enable/cam_disable contract test
+ENABLE  t=0       DISABLE t=135708     <- load 2: starts, and never ends
+                                          (that disable is the probe's cam_disable, 135s later)
+```
+
+A passing session of the same test shows `ENABLE t=0 / DISABLE t=26440` on the second load -- the
+cutscene completes normally. Nothing else differs. `CGCam_Disable` is never called by the camera
+itself; only the map's ICARUS script (or the `cam_disable` console command) calls it, so the script
+is not reaching its camera-disable step.
+
+**Consequences when it fires, all measured:**
+
+* `in_camera=1`, `killPlayerTimer=0` (temporary in-module diagnostic)
+* the pause menu is refused -- correctly, per `GameAllowedToSaveHere()`
+* **the player cannot move: 0.0 units** holding W, against 336 units in a healthy session
+* the engine's own `cam_disable` clears it and restores both menu and movement immediately, and
+  nothing re-asserts the flag -- so no cutscene is actually running by then
+
+**The contract itself is sound**, verified deterministically rather than by inference:
+`cam_enable` -> ESC refused (`keyCatchers=0`); `cam_disable` -> ESC opens the menu
+(`keyCatchers=2`). A set `in_camera` is necessary and sufficient.
+
+### Scope: this does NOT break the campaign
+
+Worth stating plainly, because a stuck cutscene that locks the player sounds campaign-ending and
+is not:
+
+| second load | result |
+|---|---|
+| `maptransition` to the next level (the campaign's own path) | player **in control, 336 units**, inventory carried (weapons 16383) |
+| `devmap` a **different** map | cutscene completes (`ENABLE t=82839 / DISABLE t=97647`), menu fine |
+| `devmap` the **same** map again | intermittently never completes -- player and menu locked |
+
+So it is reachable by a console `map`/`devmap` of the level you are already on, not by playing
+through. Reproduce with `SECOND_MAP=1 node shared/wasm-build/verify-menu.mjs 8793 artus_mine`
+(`SECOND_MAP_NAME=<other>` to contrast).
+
+### Two fixes attempted and reverted, both ineffective
+
+* `in_camera = false` from `InitGame()` -- still measured `in_camera=1` afterwards.
+* the same reset from `CG_Init()`, cgame's own per-map entry point, chosen because `InitGame` runs
+  on the `ge` instance which need not be the live cgame instance under `idt3_dlopen_fresh` -- also
+  still measured `in_camera=1`.
+
+Both were reverted. The flag is set *after* both entry points, by the map's own script starting its
+cutscene; the bug is that the script does not finish it. Clearing the flag earlier cannot fix that,
+and a watchdog that force-clears a camera nobody asked it to clear would be inventing behaviour the
+original does not have. Left open, with the mechanism pinned down to a single missing script step.
+
+### A probe bug this turned up
+
+The movement check initially reported `0.0 units` on a *healthy* session -- because it ran while
+the menu was open, so W went to the UI rather than the player. It is now guarded on the menu being
+closed. Same lesson as the rest of this log: an instrument that is not thinking about the state it
+samples in will manufacture a defect.
+
+### Third fix attempted and rejected: stale camera timestamps
+
+The camera event log showed one structural difference between the two paths:
+
+```
+devmap <same map again>    ENABLE t=0        <- cg.time restarted
+devmap <different map>     ENABLE t=82839    <- cg.time carried on
+```
+
+`client_camera` holds absolute cg.time deadlines (`move_time`, `pan_time`, `next_roff_time`), and
+on PC the struct starts zeroed every map because the DLL is reloaded. The hypothesis was that with
+cg.time back at 0, deadlines left from the previous run (up to ~41000) sit in the future, so the
+gated camera operation never completes and the script waits on it forever. It also explained the
+intermittency and why it is same-map only.
+
+It is wrong. Zeroing the whole `client_camera` block (plus `in_camera`) from `CG_Init` -- cgame's
+own per-map entry point, on the live instance -- still produced a locked session on the second
+sample. Reverted.
+
+So three hypothesis-driven fixes have now been tried and rejected on evidence:
+
+| attempt | where | result |
+|---|---|---|
+| `in_camera = false` | `InitGame()` | still `in_camera=1` afterwards |
+| `in_camera = false` | `CG_Init()` | still `in_camera=1` afterwards |
+| `in_camera` + whole `client_camera` zeroed | `CG_Init()` | still locks |
+
+The common thread: everything that runs at map-init time is too early. The flag is set *after*
+those points by the map's own script, and the fault is that the script never runs its matching
+`camera disable`. Clearing state before the script starts cannot fix a script that does not
+finish.
+
+**Stopping here deliberately, not because the trail is cold.** The next step is instrumenting the
+ICARUS sequencer/task manager to see which task is left pending when the camera never releases --
+`icarus/Sequencer.cpp` and `TaskManager.cpp`, whose state lives in the per-map `ICARUS_Instance`
+rather than in any file-scope static (already checked). That is a deeper dive than the remaining
+value justifies for a defect that:
+
+* cannot be reached by playing the campaign -- `maptransition` to the next level arrives with the
+  player in control (336 units) and inventory carried;
+* requires a console `map`/`devmap` of the level you are already standing in;
+* is intermittent even then;
+* and has a one-command recovery (`cam_disable`) that fully restores menu and movement.
+
+Everything needed to resume is here: the reproduction, the measured signature, the proven
+contract, and three eliminated hypotheses.
+
+## CORRECTION, and a severity upgrade: the stuck cutscene DOES affect campaign progression
+
+The scope table above -- "this does NOT break the campaign", with `maptransition` shown as healthy
+at 336 units -- was **wrong, and wrong for the reason this log keeps recording: it rested on a
+single passing sample.**
+
+Re-measured properly on `kejim_post -> kejim_base`, the campaign's own transition path:
+
+| | result |
+|---|---|
+| samples | 1 in control, 4 locked |
+| view drift before testing | 0.0 units / 5s (fully settled -- not a still-running camera move) |
+| movement, all four directions | `w=0 s=0 a=0 d=0` |
+| after `cam_disable` | **336.0 units** -- freed immediately |
+
+So the player arrives at the next level and cannot move at all, in any direction, with the view
+completely still; clearing the camera flag releases them. It is the same defect as the same-map
+reload, reached through normal play.
+
+Two probe faults had been masking this, both now fixed and both the same mistake in different
+clothes:
+
+* **Testing movement before the arrival cutscene could legitimately end.** A plateaued draw rate
+  says the world is being drawn, not that the player has control -- exactly the trap documented for
+  three other probes in this log. `verify-transition.mjs` now waits for `viewpos` to hold still
+  (<32 units over 5s) before testing, the same gate `verify-combat.mjs` uses.
+* **Testing only W.** `viewpos` cannot tell "locked" from "facing a wall", and an arrival spawn can
+  easily be nose-first into geometry. It now tries W, S, A and D and accepts movement in any
+  direction.
+
+With both gates in place the result is unambiguous, and the earlier single 336-unit reading was a
+run where the cutscene happened to complete.
+
+### Status
+
+This is the most serious open defect in either port: **JK2 frequently strands the player on level
+transitions.** It has a one-command recovery (`cam_disable`) and the mechanism is pinned to a
+single missing script step -- the map's ICARUS script never reaching its `camera disable` -- with
+three map-init-time fixes already eliminated because they all run before the script sets the flag.
+
+JKA shows no equivalent behaviour.
+
+The next step is unchanged but now clearly worth taking: instrument `icarus/Sequencer.cpp` /
+`TaskManager.cpp` to identify which task is left pending when the camera never releases.
+
+### Controls applied, and the result stands
+
+Two things that could have made this a false alarm were checked:
+
+* **Host contention.** The first failing samples ran with up to 28 stale headless Chrome processes
+  alive, and script timing is exactly the kind of thing that could distort. Re-run twice with the
+  browser table cleared first: `w=0 s=0 a=0 d=0`, then `cam_disable` -> 336.0 units, both times.
+  Not contention.
+* **Is it JK2-specific?** JKA, same harness, same gates, `t1_sour -> t1_danger`: view settled,
+  **478.3 units, player in control**, weapons 16383 carried, and a following plain `map` correctly
+  drops to weapons 3. JKA is unaffected.
+
+Tally on `kejim_post -> kejim_base`: **1 in control, 6 locked** across contended and clean runs.
+
+This is the most serious defect found in either port, and unlike everything else in this log it is
+reachable by simply playing: finish a level, arrive at the next one, and the player often cannot
+move until `cam_disable` is typed at the console. Everything needed to continue is recorded above
+-- reproduction, signature, proven contract, three eliminated fixes, and the next instrumentation
+step (`icarus/Sequencer.cpp` / `TaskManager.cpp`, to find the pending task).
+
+### Refined with the engine's own script trace
+
+`g_ICARUSDebug 3` (a shipped CVAR_CHEAT that logs script execution) made the arrival sequence
+visible, and it both sharpened the diagnosis and exposed one more fault in the probe:
+
+```
+maps/kejim_base.bsp (0 0 6) : 0          x8   <- the player is at the world ORIGIN
+maps/kejim_base.bsp (416 792 60) : -180        <- placed, once scripts/kejim_base/start ran
+INFO: 34900 Script scripts/kejim_base/ambush executed by target_scriptrunner run_ambush
+maps/kejim_base.bsp (80 792 60) : -180         <- 336 units, after cam_disable
+```
+
+**The probe fault:** `(0 0 6)` is the origin -- the player is not placed yet -- and a player at the
+origin is perfectly *still*, so the "view settled" gate passed and movement was tested before there
+was anyone to move. `verify-transition.mjs` now refuses to treat an origin reading as a placed
+player and says so.
+
+**The verdict did not change.** With the corrected gate the player stays at `(0 0 6)` for the full
+120-second window and then moves 336 units the moment `cam_disable` is issued. That is consistent
+with `CGCam_Enable`'s own comment -- "Player zero not allowed to do anything" -- so the camera is
+holding the player, exactly as designed, and the fault remains that nothing releases it.
+
+JKA through the same corrected gate: player placed at `-3881 -2584 1244`, settled, **471.3 units,
+in control**, weapons 16383 carried, plain `map` correctly dropping to 3. Unaffected.
+
+### Next lead, concrete: the two clocks disagree after a transition
+
+Running the arrival with the engine's own `g_ICARUSDebug 4` (WL_DEBUG = 4; the earlier attempt at
+3 was one level too low to print wait commands) captured the script's own wait trace:
+
+```
+^4DEBUG: ambush_io(150):   wait("fire");   [409050]
+^4DEBUG: ambush_st2(297):  wait( 3000 );   [409850]
+^4DEBUG: shoot_glass(162): wait( 3000 );   [409850]
+```
+
+The bracketed number is `task->GetTimeStamp()`, i.e. `Q3_GetTime()` == **`level.time`**, reading
+~409,000 ms on a map that had just been loaded. The camera events from the same session report
+`cg.time = 0` at `CGCam_Enable`. So after a transition the game clock and the client clock are far
+apart, and anything that sets a deadline in one and tests it in the other cannot work. On PC both
+start near zero together on every map, so a mix-up like that would never show.
+
+Where to look first:
+
+* `SV_SpawnServer` does `memset(&sv, 0, sizeof(sv))` then `sv.time = 1000`, and
+  `SV_InitGameProgs` passes that straight through:
+  `ge->Init( ..., sv.time, com_frameTime, Com_Milliseconds(), ... )` (sv_game.cpp:498).
+  So `level.time` is *supposed* to restart at ~1000 on every map. The trace says it does not.
+* Two ICARUS wait forms can hang forever, and both are worth checking against that clock:
+  `wait( <ms> )` completes only when `timestamp + dwtime < I_GetTime()`, and `wait( "<group>" )`
+  returns `TASK_FAILED` with `completed = false` -- re-queuing itself every frame -- whenever
+  `GetTaskGroup()` cannot find the named group (TaskManager.cpp:1059).
+
+That is the first thing to measure next time: print `level.time` at the top of `InitGame` and at
+the first `CGCam_Enable` on both the first and second map of a session, in JK2 and JKA. If
+`level.time` really is carrying across maps in JK2, that is very likely the whole defect, and it is
+a much smaller thing to fix than the script engine.
+
+## CORRECTION: the transition lock is NOT the stuck camera, and the mechanism is unknown
+
+Everything above that attributes the level-transition lock to `in_camera` is **withdrawn**. The
+observation is real; the explanation was not.
+
+**What is solidly established**, from a run that issues no commands at all and therefore cannot
+perturb what it measures:
+
+```
+left origin after     : NEVER (>263s)
+movement by direction : w=0 s=0 a=0 d=0
+after cam_disable     : 336.0 units
+```
+
+After `maptransition kejim_post -> kejim_base` the player sits at `(0 0 6)` -- the world origin,
+i.e. never placed -- for over four minutes of pure observation, cannot move in any direction, and
+then moves 336 units the moment `cam_disable` is typed. That is reproducible and it is JK2-only:
+JKA through the identical harness reports the player placed at `-3881 -2584 1244`, settled, **471.3
+units, in control**.
+
+**Why the camera explanation fails.** `CMD_CGCam_Disable` does three things -- `CGCam_Disable()`,
+`CGCam_SetFade()`, and `player_locked = qfalse` -- so "cam_disable fixes it" identifies the
+*group*, not the member. Taking them in turn:
+
+* `player_locked` is assigned `qfalse` in exactly two places and **is never set true anywhere in
+  the codebase** (Q3_Interface.cpp:6392 defines it `qfalse`). It cannot be the cause.
+* `in_camera` requires `CGCam_Enable`, and instrumenting both entry points showed a `DISABLE` (the
+  probe's own `cam_disable`) with no `ENABLE` in the captured window. That is suggestive but *not*
+  conclusive, because the log ring is capped at 2000 lines and a map-1 `ENABLE` can scroll out
+  before the dump. Recorded as unresolved rather than decided.
+
+**Hypotheses eliminated by measurement, so nobody repeats them:**
+
+| hypothesis | how it died |
+|---|---|
+| `level.time` fails to reset across maps | printed it: `levelTime=1000 level.time=1000` on **both** maps |
+| the two clocks diverge | the 409,000 ms figure was map 2's own clock after several minutes of probe settle loops -- ordinary |
+| `player_locked` stuck true | nothing in the source ever sets it true |
+| `in_camera` stale from map 1 | resetting it at `InitGame()` and again at `CG_Init()` changed nothing |
+| stale `client_camera` deadlines vs a restarted `cg.time` | zeroing the whole struct at `CG_Init()` changed nothing |
+| module-loading strategy | reproduces identically under `idt3_dlopen_fresh` and plain `dlopen` |
+| the `CNavigator::Free()` use-after-free | removed the fix, rebuilt, still reproduces |
+
+**Method note, because it cost more than any hypothesis did.** Four separate conclusions in this
+investigation had to be retracted, and every one came from an instrument that was not thinking
+about the state it sampled in:
+
+* a movement check that ran with the menu open, so W went to the UI -- reported `0.0 units` on a
+  healthy player;
+* a "view settled" gate that accepted a player parked at the world origin as *still*;
+* a movement check that only pressed W, unable to tell "locked" from "facing a wall";
+* a trace dump taken at the end of a run, by which time the arrival script had scrolled out of the
+  ring, leaving a later script's ordinary timestamps to be misread as a clock that had not reset.
+
+Two conclusions were also drawn from runs whose **build had silently failed** (`errs: 714`), so the
+old module was under test. Check `build.errs` is zero before believing any result that follows a
+source edit.
+
+**Status: open, mechanism unknown, JK2 only.** The next honest step is to determine whether
+`CGCam_Enable` fires at all on either map, using a sink that cannot overflow -- write the events
+straight to a file through the platform layer rather than the capped console ring.
+
+## FIXED: a cinematic camera left running when the level ends (2026-08-19)
+
+The transition lock is solved, and the answer came from fixing the *instrument*, not from a new
+hypothesis. Capturing the engine log **uncapped** -- `index.html` funnels `Module.print` into a
+ring capped at 2000 lines that shifts, so the arrival sequence was always gone by the time a probe
+dumped it -- made the whole thing visible in six lines:
+
+```
+DEBUG: cinematic1_script(558): camera( ENABLE ); [1850]              <- on kejim_post
+DEBUG: cinematic1_script(558): camera( MOVE, <4092 -1724 63>, ... );
+maps/kejim_post.bsp (4092 -1724 63) : 212                            <- the view IS the camera
+==== ShutdownGame ====                                                <- level ends mid-cinematic
+Server: kejim_base
+...no camera( ENABLE ) and no camera( DISABLE ) ever again
+```
+
+The level ends while the cinematic is still playing, so the ICARUS script that would have run
+`camera( DISABLE )` dies with the level and `in_camera` is never cleared. On PC that costs nothing:
+the game+cgame DLL is unloaded and reloaded per map, so the flag returns to its static initialiser
+for free. Our side module persists, so it carries into the next level, which then behaves as though
+a cutscene were playing -- `CGCam_Enable`'s own *"Player zero not allowed to do anything"* keeps the
+player unplaced at the world origin, and `GameAllowedToSaveHere() == (!in_camera &&
+!killPlayerTimer)` refuses the pause menu for the rest of the session.
+
+**This is the fourth instance of one pattern in this port** -- `num_roffs`, `NumMiscEnts`, entity
+ICARUS state, and now `in_camera`. Every one is "the original relies on module unload for cleanup,
+and we have to do it explicitly."
+
+The fix restores the static-init value at `CG_Init`, cgame's own per-map entry point. Deliberately
+*not* `CGCam_Disable()`: that is the runtime "a cutscene just ended" path and would start a bar
+fade, reassign `g_entities[0].contents` and send a `cts` server command, none of which belongs at
+init. A level that legitimately opens on a cutscene sets the flag again moments later.
+
+Applied to **both** engines. JKA has the identical `in_camera` static in `cg_camera.cpp`, the
+identical predicate at `g_savegame.cpp:1236`, and the same persisting module; it was never observed
+to trip on `t1_sour -> t1_danger`, but that is a property of the map pair tested, not of the engine.
+
+### Measured
+
+| | before | after |
+|---|---|---|
+| JK2 `kejim_post -> kejim_base` | 1 pass / 6 fail; player at origin **>264s**, immobile w/s/a/d | **4/4 pass**, `left origin after: 1s`, 336 units |
+| JK2 same-map reload, pause menu | 2 pass / 4 fail | **2/2 pass** |
+| JKA `t1_sour -> t1_danger` | 471 units (already passing) | 468 units, weapons 16383, pass |
+
+### Two of my own conclusions this overturned
+
+* **Withdrawing the camera attribution was wrong.** "No `CGCam_Enable` was logged" was the capped
+  ring dropping it, not evidence of absence. The lesson is the one this log keeps relearning: an
+  instrument that silently discards data manufactures conclusions in both directions.
+* **The `CG_Init` reset was called "ineffective" twice.** Both trials were against the *same-map
+  reload*; it had never been tried against the transition path. Not a repeated failure -- an
+  untested case.
+
+### Standing rule earned here
+
+Check `build.errs` is zero before believing any result that follows a source edit. Two conclusions
+in this investigation came from runs whose build had silently failed (`errs: 714`), so the previous
+module was under test.
+
+## CORRECTION to the fix itself: it is one line, and it is Raven's own
+
+The `CG_Init` reset described above was replaced. Comparing the two engines' `CG_Shutdown` -- the
+function whose own comment reads *"Called before every level change or subsystem restart"* --
+settles where this belongs:
+
+```c
+// JK2 (this drop)                 // JKA (the later engine)
+void CG_Shutdown( void )           void CG_Shutdown( void )
+{                                  {
+                                       in_camera = false;      <-- present only here
+    FX_Free();                         FX_Free();
+}                                  }
+```
+
+The functions are otherwise identical, comment included. **Raven fixed this bug in JKA; the JK2
+drop predates the fix.** So the change is that single line, in that function, and nothing else.
+
+Two consequences:
+
+* **JKA is back to pristine.** The reset added to JKA's `CG_Init` was pure redundant divergence --
+  the shipped code already clears the flag, which is exactly why JKA never tripped this in any
+  test. Removed. The asymmetry that looked like a mystery all session (JK2 fails, JKA does not) was
+  simply that one engine has the line.
+* **JK2 gets the line where its author put it**, rather than a bespoke reset at a different entry
+  point chosen by guesswork.
+
+Re-verified after relocating: `kejim_post -> kejim_base` **3/3 pass**, `left origin after: 1s`,
+336 units each time.
+
+**A judgment call flagged for review.** That line was identified by reading JKA's source. The hard
+rule in CLAUDE.md bars copying from **iortcw, OpenJK and ET:Legacy** -- community ports -- and both
+`games/jka` and `games/jk2` here are pristine Raven GPL drops, so this reads as the same vendor's
+own later fix rather than a third-party patch. It is called out explicitly so a reviewer can take
+the stricter reading; the fallback would be the `CG_Init` reset, which works but sits in the wrong
+place for the wrong reason.
+
+## Verification after the `CG_Shutdown` fix (2026-08-19)
+
+Everything re-run against the relocated one-line fix, not the earlier `CG_Init` version.
+
+| check | JKA | JK2 |
+|---|---|---|
+| build (engine + game module) | 0 errors, 0 warnings | 0 errors, 0 warnings |
+| boot console | 0 errors, 0 warnings | 0 errors, 4 retail-content warnings |
+| campaign sweep | **34/34 OK** | **26/26 OK** |
+| level transition | 468 units, in control, weapons 16383 | **3/3 pass**, origin left in 1s, 336 units |
+| cinematics (video + audio) | **14/14** | **15/15** |
+| savegame round-trip | PASS | PASS |
+| movement (engine `viewpos`) | 281 units | 138 units |
+
+The cinematic sweeps matter here specifically: the fix touches camera state on level change, and
+`CGCam_*` is the same subsystem the RoQ player's `CA_CINEMATIC` path sits beside. Both games play
+every shipped video, decoding and audible, unchanged.
+
+### Final engine-change inventory
+
+Five changes across both trees, every one `__EMSCRIPTEN__`-guarded:
+
+| file | change | why |
+|---|---|---|
+| jka `cg_main.cpp` | `CG_ResetMiscEnts()` | misc-model cache survives map load |
+| jka `g_main.cpp` | `.ROF` cache reset | `num_roffs` survives map load |
+| jk2 `cg_main.cpp` | `in_camera = false` in `CG_Shutdown` | the line JKA ships and JK2 does not |
+| jk2 `g_main.cpp` | `.ROF` cache reset | same as JKA |
+| jk2 `g_navigator.cpp` | `CNavigator::Free()` use-after-free | deletes nodes, never clears the vector |
+
+**Four of the five are one bug wearing different clothes**: the original relies on the game DLL
+being unloaded per map to reset its statics, and a persisting wasm side module never gets that for
+free. `num_roffs`, `NumMiscEnts`, `in_camera` are the three statics; the navigator use-after-free is
+the same assumption seen from the other end -- harmless on PC only because the DLL unloads
+immediately afterwards.
+
+That pattern is the single most useful thing to know when porting one of these engines. Anything
+that is only correct because a library gets unloaded is a defect here, and it will present as
+"works on the first map, misbehaves on the second."
+
+## Still open, and separate: same-map console reload
+
+The `CG_Shutdown` line fixes the *transition* defect and does not touch this one. Measured against
+the relocated fix: `devmap artus_mine` twice in one session gives **1 pass / 2 fail** on the pause
+menu, unchanged from before.
+
+They are genuinely different faults, and the camera traces distinguish them:
+
+| | transition (`maptransition A -> B`) | same-map (`devmap A` twice) |
+|---|---|---|
+| trace | `camera( ENABLE )` on map A, level ends mid-cinematic, no `DISABLE` | `ENABLE t=0` on the **second** load, no `DISABLE` |
+| flag | carried over from the previous level | set fresh on the new one |
+| fixed by clearing state at level change | **yes** | no -- the flag is set after that point |
+
+An earlier "2/2 pass" reported for the same-map case was two samples of a bug that had been failing
+two-in-four; it was luck, not evidence, and is retracted. Sample counts for intermittent faults
+have to be set by the failure rate, not by convenience -- the third such retraction in this
+investigation and by far the most avoidable.
+
+**Severity: low.** It requires typing `devmap <the level you are already standing in>` at the
+console. It is not reachable by playing the campaign, which is verified clean end to end on both
+games. Recovery is `cam_disable`.
+
+Instrumentation for the next attempt is already in place: `verify-menu.mjs` now captures the engine
+log **uncapped** (the capped ring hid the transition cause twice) and honours `EXTRA_ARGS`, so
+`EXTRA_ARGS="+set g_ICARUSDebug 4" SECOND_MAP=1 node shared/wasm-build/verify-menu.mjs 8793
+artus_mine` writes a full script trace to `$LOGFILE`. What is wanted from it is the second load's
+intro script: which command it reaches before the camera stops being disabled.
+
+### What the uncapped log shows for the same-map case
+
+Three instrumented runs (`EXTRA_ARGS="+set g_ICARUSDebug 4"`), two passing and one failing, with
+the full trace kept. The failing run is immediately distinguishable by size: **313 log lines
+against 486**.
+
+The state going *into* the reload is identical -- same script, same command, 50 ms apart:
+
+```
+PASS  ^4DEBUG: t63(273): wait( 35000 ); [26600]
+FAIL  ^4DEBUG: t63(273): wait( 35000 ); [26550]
+```
+
+The divergence is entirely inside the second load:
+
+| after the second `Server: artus_mine` | PASS | FAIL |
+|---|---|---|
+| NPC `BSET_SPAWN` scripts | ~200 lines, running normally at `[1550]` | **none at all** |
+| what appears instead | -- | `INFO: target_scriptrunner cinematic4_script used by kyle` |
+| anything after that | the level plays | **silence for the rest of the run** |
+
+So on a failing reload the level never finishes bringing its entities up -- `artus_mine/kill_me`,
+`artus_mine/prisoner1` and the rest never execute their spawn scripts -- and a cinematic
+scriptrunner fires instead. That is consistent with everything measured downstream: a camera
+enabled by a cutscene that the level never got far enough to finish, hence no `camera( DISABLE )`,
+hence `in_camera` stuck, hence the pause menu refused.
+
+Note it is *not* the same fault as the transition defect, which was a flag surviving a level
+change. Here the flag is set fresh, by a script that runs when it should not.
+
+The next question is why `cinematic4_script` is "used by kyle" on a fresh load at all -- a
+`target_scriptrunner` fires on a trigger, and the player should not be standing in one at spawn.
+Worth checking whether the player is being restored to the previous session's position instead of
+`info_player_start` on `devmap`.
+
+### Narrowed to three lines, all of which fail silently
+
+On a failing second load the script is *attempted* and never *runs*:
+
+```
+PASS  INFO: target_scriptrunner cinematic4_script used by kyle
+      INFO: cinematic4_script attempting to run bSet BSET_USE (cinematics/cinematic4)
+      INFO: 1600 Script scripts/cinematics/cinematic4 executed by target_scriptrunner   <-- present
+      ... 8 camera( ... ) commands follow
+
+FAIL  INFO: target_scriptrunner cinematic4_script used by kyle
+      INFO: cinematic4_script attempting to run bSet BSET_USE (cinematics/cinematic4)
+      (nothing -- no "executed by", zero camera( commands, and ICARUS never logs again)
+```
+
+`ICARUS_RunScript` (g_ICARUS.cpp) can only fail three ways, and **every one returns silently**:
+
+```c
+if ( ent->sequencer == NULL ) return false;                 // its Com_Printf is commented out
+len = ICARUS_GetScript( name, &buf );
+if ( len == 0 ) return false;                               // silent
+if S_FAILED( ent->sequencer->Run( buf, len ) ) return false; // silent
+```
+
+That silence is why this defect took so long to corner: a script can fail to run in three distinct
+ways and say nothing. Restoring a diagnostic on those paths is worth doing on its own merits,
+independently of this bug.
+
+One candidate ruled out immediately: `ICARUS_BufferList` is
+`map<string, pscript_t*, less<string>>`, so the script cache is keyed by string *content*. The
+`find( (char *) name )` calls look like the classic pointer-keyed-cache bug and are not.
+
+**Sampling status.** Post-fix the same-map case measures **7 pass / 3 fail over 10 runs** -- an
+intermittent race of roughly 30%, unchanged in character by the `CG_Shutdown` fix (which addresses
+a different fault). Catching it under instrumentation is a matter of enough samples; four
+consecutive passes proved only that four runs passed.
+
+### CORRECTION: after the fix, the same-map failure is no longer the `in_camera` predicate
+
+The `CG_Shutdown` fix changed this defect's failure *mode*, which invalidates the description above.
+
+Before the fix, running `save` at the moment the menu was refused produced **no output at all** --
+`SG_WriteSavegame` returns silently when the predicate is false, which is how `in_camera` was
+identified as the blocker. After the fix, the same probe at the same moment reports:
+
+```
+save at that moment  : ^5Saving game "idt3menuprobe2"... | ^5Done.
+```
+
+The save **succeeds**. And both callers bottom out in the same place --
+`SG_GameAllowedToSaveHere(qboolean inCamera)` uses its argument only to *skip* the extra checks
+(server running, not in a video, `sv.state`, map name, health) and then returns
+`ge->GameAllowedToSaveHere()` regardless. So a successful save proves that predicate is true, and
+therefore proves the menu is **not** being refused by `in_camera` or `killPlayerTimer` any more.
+
+Something else refuses it. `cam_disable` still clears the symptom, but that command does three
+things -- `CGCam_Disable()`, `CGCam_SetFade()`, `player_locked = qfalse` -- and `CGCam_Disable()`
+additionally restores `g_entities[0].contents` and sends a `cts` server command. Identifying which
+of those matters is the open question; the earlier reasoning that "cam_disable fixes it, therefore
+in_camera" was never valid and is now positively disproved.
+
+Also newly established, from the uncapped trace: on a failing second load the engine reaches
+`G_ActivateBehavior`'s "attempting to run bSet" print and then **produces no further output for the
+rest of the session**, while none of the three `ICARUS_RunScript` failure paths (instrumented, then
+reverted) fire. Execution never enters that function. The call site carries Raven's own comment:
+
+```c
+//FIXME: between here and actually getting into the ICARUS_RunScript function, the stack gets blown!
+```
+
+Ruled out along the way: the script cache is keyed by `std::string` content, not by pointer
+(`ICARUS_BufferList` is `map<string, pscript_t*, less<string>>`, so the `find( (char *) name )`
+calls are not the bug they resemble); and `bs_name` is an entity field, not a `va()` result
+aliasing the buffer the call then formats into.
+
+**Sampling, post-fix: 7 pass / 4 fail across 11 runs.** Roughly a third, unchanged in rate.
+Severity is unchanged and low: it needs `devmap <the level you are standing in>` at the console and
+is not reachable by playing the campaign.
+
+### The likely root: statics split across module instances, measured
+
+`va()` was instrumented to print the address of its `static char string[2][32000]` once per copy.
+One session, two map loads:
+
+```
+IDT3VA buffer=0x12cfd50     <- the engine (main module)
+IDT3VA buffer=0x4b10380     <- game module, instance 1
+IDT3VA buffer=0x8b50380     <- game module, instance 2
+```
+
+Two things fall out, one of which kills a hypothesis:
+
+* **Engine and game do NOT share `va`'s buffer.** They have separate copies, as on PC. The theory
+  that a flat symbol namespace collapses them into one rotating buffer -- which would have made
+  every cross-boundary `va()` result corruptible, and looked like a tidy explanation for an
+  intermittent fault -- is wrong.
+* **The side module gets a fresh set of statics per instantiation.** `idt3_dlopen_fresh()`
+  re-instantiates it on every map load, so each load produces another private copy of every static
+  in the game module.
+
+That second point matters, because this port has already measured that gameplay stays bound to
+**instance #1** while `dlsym` on the new handle reaches instance #2 (see the `CG_ResetMiscEnts`
+entry, where `&NumMiscEnts` differed between the reset and the increment). So after a second map
+load there are two live copies of every game-module static, and which one a given code path sees
+depends on how it was reached.
+
+That is the same root cause as the three defects already fixed here -- `num_roffs`, `NumMiscEnts`,
+`in_camera` -- and it is the most probable explanation for the residual same-map fault: a piece of
+script or behaviour state written in one instance and read in the other, intermittently, depending
+on interleaving.
+
+It also explains why every fix attempted at map-init time failed. Those all write instance N's copy
+while the reader may be looking at instance 1's.
+
+**The structural fix is known and already rejected on evidence**: dropping `idt3_dlopen_fresh()` in
+favour of a plain `dlopen` removes the duplicate instances entirely -- and costs **17 of 34 JKA
+maps**, which is far worse than the defect it would cure. That measurement is recorded above and
+has not changed.
+
+So the honest position on this one is: root cause identified with high confidence, the clean fix is
+unavailable, and the remaining options are per-symbol resets of the kind already applied three
+times -- each needing the specific static identified first. The next step is to find which static
+diverges on the failing path, which the address-printing technique above can do directly.
+
+### The fault is timing-sensitive: instrumentation suppresses it
+
+Bracketing the suspect call to separate "`va()` faulted" from "`ICARUS_RunScript` failed":
+
+```c
+printf( "IDT3BS pre ptr=%p seq=%p", bs_name, self->sequencer );
+const char *idt3p = va( "%s/%s", Q3_SCRIPT_DIR, bs_name );
+printf( "IDT3BS post name=%s", idt3p );
+ICARUS_RunScript( self, idt3p );
+```
+
+Eight consecutive runs passed, every one showing identical, healthy values:
+
+```
+IDT3BS pre  ptr=0x1dbd34c seq=0x1bc2d48
+IDT3BS post name=scripts/artus_mine/start
+```
+
+Against a fault that reproduces roughly one run in three *without* instrumentation, eight
+consecutive passes is itself a measurement: **adding `printf` calls to this path suppresses it.**
+The same happened with `g_ICARUSDebug 4` enabled (2 pass / 1 fail, where the same build failed
+2-of-3 with debug off). That is the signature of a race, not of a deterministic bad pointer, and it
+rules out the simplest version of the dangling-`bs_name` theory -- a genuinely invalid pointer
+would fault regardless of how much logging surrounds it.
+
+It also means this particular instrument cannot catch this particular bug: observing it changes it.
+Catching it needs something that does not add work to the failing path -- recording the pointer
+values into a static ring inspected *afterwards*, rather than printing inline.
+
+Running total on the same-map case, post-`CG_Shutdown`-fix and excluding runs invalidated by a CDP
+port collision: **15 pass / 4 fail across 19 runs.**
+
+### RESOLVED to a mechanism (2026-08-19): the predicate *is* false at the ESC moment
+
+Measured directly, printing `SG_GameAllowedToSaveHere()` from inside `CL_KeyEvent` at the instant
+ESC is pressed, three failing runs:
+
+```
+IDT3ESC state=7 catchers=0 ingameCin=0 standby=0
+IDT3ESC allowed(qtrue)=0 allowed(qfalse)=0
+```
+
+So the chain is settled:
+
+1. ESC reaches the menu code -- `cls.state == CA_ACTIVE`, `keyCatchers == 0`, and
+   `CL_IsRunningInGameCinematic() == 0`, so the cinematic branch in `CL_KeyEvent` does **not**
+   swallow it. (That branch was a candidate; it is excluded.)
+2. `UI_SetActiveMenu( "ingame", NULL )` is entered and returns at its very first line, because
+   `ui.SG_GameAllowedToSaveHere(qtrue)` is false.
+3. With `inCamera = qtrue` that call skips every other check and reduces to
+   `ge->GameAllowedToSaveHere()` == `(!in_camera && !killPlayerTimer)`. So a camera is active when
+   ESC is pressed.
+4. It cannot be a missing menu: `UI_InGameMenu()` calls `Key_SetCatcher( KEYCATCH_UI )`
+   **unconditionally**, so even a failed `Menus_ActivateByName` would leave catchers at 2. They are
+   0, which places the exit strictly at step 2.
+
+**Two of this investigation's own errors, corrected.**
+
+*The "save succeeds, so the predicate is true" disproof was invalid.* The probe runs that save
+**after** its ESC attempts, so it measured a different moment. The predicate is false during the
+ESC window and true later. Using a measurement from one moment to exclude a hypothesis about
+another is the same mistake this log records twice already; it cost the `in_camera` explanation a
+premature retraction and several rounds chasing `va()`, dangling `bs_name`, and
+`ICARUS_RunScript` -- all of which measured clean.
+
+*The `Menus_ActivateByName: Unable to find menu ''` warning is produced by the probe itself*, which
+sends `uimenu` with no argument. It is not an engine fault and was nearly reported as the cause.
+
+**What remains open** is narrow: on a same-map `devmap` reload the opening cutscene enables the
+camera and, intermittently, never reaches its `camera( DISABLE )`. That is the same *shape* as the
+transition defect fixed above but a different *cause* -- there the flag survived a level change,
+here it is set fresh by a cutscene that does not finish. The `CG_Shutdown` clear correctly fixes
+the first and correctly cannot fix the second.
+
+### Two more mechanisms eliminated, and the address trail that survives
+
+**`CG_SHUTDOWN` is not being skipped.** The guard in `CL_ShutdownCGame` (`if ( !cgvm.entryPoint )
+return;`) looked like a perfect explanation for "the fix works on transitions but not on reloads".
+Instrumented, it is not: the dispatch sequence is **identical** on passing and failing runs.
+
+```
+FAIL  entryPoint = 0, 0, 0, 0x1ee3, 0x1ee3, 0, 0x20b6
+PASS  entryPoint = 0, 0, 0, 0x1ee3, 0x1ee3, 0, 0x20b6
+```
+
+`CG_SHUTDOWN` is dispatched three times with valid entry points in both. Whatever differs, it is
+not whether cgame's shutdown runs.
+
+**The second load runs no camera commands at all.** Counting `camera( ... )` script commands either
+side of the map change, three failing runs agreeing exactly:
+
+```
+load1 cam=8    load2 cam=0
+```
+
+So `in_camera` is **not** set fresh on the second load -- it is carried over from the first. That
+kills the "the reload's own cutscene starts and stalls" reading recorded earlier, which had been
+inferred from a log whose script tracing was switched off (zero lines because nothing was logging,
+not because nothing ran -- a trap worth naming, since it produced a confident wrong conclusion).
+
+**What the addresses do show.** `cgvm.entryPoint` changes across loads, `0x1ee3` -> `0x20b6`: a new
+cgame instance. Combined with the three `va()` buffer addresses measured earlier (one engine, two
+game-module instances in a two-map session), the picture is consistent: `CG_Shutdown` clears *its*
+instance's `in_camera` while `ge->GameAllowedToSaveHere()` reads *another* instance's copy. That is
+the same per-instance divergence already documented as the root of `num_roffs`, `NumMiscEnts` and
+the transition defect -- and it is why a clear placed at any single entry point can fix one path and
+not another.
+
+**Mechanisms eliminated by measurement in this investigation**, so none is retried:
+
+| # | hypothesis | killed by |
+|---|---|---|
+| 1 | module-loading strategy | reproduces under both `idt3_dlopen_fresh` and plain `dlopen` |
+| 2 | `CNavigator::Free()` use-after-free | removed the fix, still reproduces |
+| 3 | `in_camera` reset at `InitGame` / `CG_Init` | still measured `in_camera=1` after |
+| 4 | stale `client_camera` deadlines vs restarted `cg.time` | zeroing the struct changed nothing |
+| 5 | `level.time` not resetting per map | prints `1000` on both maps |
+| 6 | shared `va()` buffer across modules | three distinct buffer addresses |
+| 7 | dangling `bs_name` / `va()` faulting | `post` marker printed a valid path |
+| 8 | dying inside `ICARUS_RunScript` | all four stage markers reach `d-ran` |
+| 9 | ESC swallowed by the cinematic branch | `ingameCin=0` at every ESC |
+| 10 | `Menus_ActivateByName` failing | the empty-name warning is the *probe's* own `uimenu` |
+| 11 | `CG_SHUTDOWN` skipped on reload | identical dispatch on pass and fail |
+
+What is established: `UI_SetActiveMenu` returns at its first line because
+`ge->GameAllowedToSaveHere()` is false at the ESC moment, and the `in_camera` behind it is a
+carried-over value the shutdown clear did not reach. The remaining work is to identify which
+instance's copy the game module reads and clear that one -- the address-printing technique used
+throughout does this directly.
+
+### Instance divergence excluded for `in_camera` itself
+
+The address-printing technique that identified `NumMiscEnts` was applied to `in_camera` directly --
+printed from the writer (`CG_Shutdown`, where the fix clears it) and from the reader
+(`GameAllowedToSaveHere`), in the same session:
+
+```
+clear &in_camera=0x46ac20c was=0
+read  &in_camera=0x46ac20c val=1
+```
+
+**Same address.** So the clear and the read touch the *same* copy, and the per-instance divergence
+that explains `num_roffs` and `NumMiscEnts` is **not** what is happening to this variable. Twelfth
+mechanism eliminated.
+
+What the same trace shows is that `in_camera` was **already false** when `CG_Shutdown` ran
+(`was=0`) and is true later at the same address -- so something sets it after the clear, on a load
+that issues no camera script commands at all.
+
+**Limitation, stated because it matters:** passing runs print identical lines, so these samples do
+not isolate the failing moment -- they may all come from the first load's legitimate cutscene. The
+reader probe is capped at six prints and gated on `in_camera` being set, which is what keeps it off
+the hot path, but it needs correlating with the map-change boundary before it can say more. That
+correlation is the next measurement, not a conclusion drawn from this one.
+
+Also corrected here: JK2's `GameAllowedToSaveHere()` is simply `return !in_camera;`. The
+`(!in_camera && !killPlayerTimer)` form quoted throughout the earlier entries is **JKA's**
+(g_savegame.cpp:1236). No conclusion changes -- `killPlayerTimer` was independently excluded -- but
+the JK2 predicate is the simpler one, and the comment on the fix has been corrected to match.
+
+### A clean discriminator at last: the flag is set on load 2 in BOTH cases, and only fails to clear
+
+Gating the `in_camera` read probe to load 2 only (a load counter incremented in `CG_Init`), with
+headroom well above the observed counts:
+
+| run | blocked reads of `in_camera` during load 2 |
+|---|---|
+| PASS | **3** -- set briefly, then cleared |
+| FAIL | **24** |
+| FAIL | **24** |
+
+So the second load *does* set `in_camera` in healthy sessions too; the anomaly is purely that it
+never clears. Every earlier framing that treated "the flag is set on load 2" as the bug was
+looking at normal behaviour.
+
+**This measurement also had to be fixed before it said anything.** The first version capped prints
+at 8 and reported `6 on load 1 / 2 on load 2` -- identical on pass and fail, because 6+2 is the cap.
+It was measuring the cap, not the engine. Suspiciously round numbers that match a limit are the
+instrument, not the result; that is now the third probe defect in this investigation, after the
+`uimenu`-generated "Unable to find menu ''" warning and the runs silently invalidated by a dead dev
+server.
+
+**The contradiction still open:** the second load issues **zero** `camera( ... )` script commands
+(measured, three runs) yet `in_camera` becomes set there. Something other than a script camera
+command sets it. Finding that setter is the next step, and it is a narrow one -- `CGCam_Enable` is
+the only writer, so the question is who calls it on a load that runs no camera script.
+
+### The mechanism, settled: the reload's cutscene starts and never disables
+
+Instrumenting the only writer of `in_camera` -- `CGCam_Enable` -- and its counterpart
+`CGCam_Disable`, each tagged with a load counter incremented in `CG_Init`. Three failing runs,
+byte-identical:
+
+```
+IDT3W ENABLE load=1   IDT3W DISABLE load=1     <- map 1's opening cutscene: runs and ends
+IDT3W ENABLE load=1   IDT3W DISABLE load=1     <- the probe's own cam_enable/cam_disable test
+IDT3W ENABLE load=2                             <- the reload's cutscene starts, and never ends
+```
+
+`CGCam_Enable` **is** called on the second load. So the earlier measurement of "zero `camera( ... )`
+script commands on load 2" was a **logging artifact** -- the ICARUS debug trace did not capture
+them -- and not evidence that the cutscene failed to run. That artifact had been carried through
+several entries above as a genuine contradiction; it is retracted here.
+
+With that resolved, the same-map reload defect has exactly the shape of the transition defect fixed
+earlier: a cutscene enables the camera and its `camera( DISABLE )` never arrives. The difference is
+only *where* the missing disable leaves the flag -- across a level change (fixed by the
+`CG_Shutdown` clear, which is Raven's own line) versus within a single load (not fixed, because
+there is no level change to clear at).
+
+**Caveat on these three runs:** all three failed, so there is no passing sequence to contrast
+against. What a healthy reload's trace looks like -- presumably `ENABLE load=2` followed by
+`DISABLE load=2` -- has not been captured, and should be, before treating "the disable never
+arrives" as the complete story rather than the most probable reading of three same-outcome samples.
+
+**Next step**, unchanged in kind but now precisely targeted: find why the load-2 cutscene script
+stops before its camera-disable step, given that the identical script completes on load 1 in the
+same session.
