@@ -362,11 +362,11 @@ if (process.env.SECOND_MAP) {
   }
   console.log(`after 2nd load, ESC  : keyCatchers=${kc2}`);
   {
-    await exec('idt3iddump');
+    await exec('idt3adddump');
     await sleep(1200);
     const all = await S('Runtime.evaluate', { returnByValue: true, expression: 'JSON.stringify(window.__allLog||[])' });
     let arr = []; try { arr = JSON.parse(all.result.value || '[]'); } catch {}
-    const g2 = arr.filter(l => /IDT3ID|IDT3SD/.test(String(l))).map(l => String(l).trim());
+    const g2 = arr.filter(l => /IDT3ADD/.test(String(l))).map(l => String(l).trim());
     const _unused = 0;
     console.log(`   ids: ${g2.length ? g2.join(' :: ') : '(no reply)'}`);
 
