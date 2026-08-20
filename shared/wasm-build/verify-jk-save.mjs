@@ -14,6 +14,11 @@
 //
 //   node verify-jk-save.mjs <game> <httpPort> "<+args>" [secPerPhase]
 import { CHROME, tmpProfile } from './chrome.mjs';
+// idTech3-web: the profile directory name must be unique per run. It used to be a fixed
+// 'idt3-save-<game>', and a single crashed or killed run leaves a SingletonLock behind that makes
+// every later Chrome exit immediately -- the harness then dies on a null webSocketDebuggerUrl,
+// which reads as an engine failure rather than a stale lock. Every other harness here already
+// keys the directory by pid.
 import { execFile } from 'node:child_process';
 import http from 'node:http';
 
@@ -28,7 +33,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const chrome = execFile(CHROME, [
   `--remote-debugging-port=${CDP}`, '--headless=new', '--mute-audio', '--use-gl=angle',
   '--enable-unsafe-swiftshader', '--autoplay-policy=no-user-gesture-required', '--no-first-run',
-  '--window-size=1280,720', `--user-data-dir=${tmpProfile('idt3-save-' + GAME)}`, 'about:blank']);
+  '--window-size=1280,720', `--user-data-dir=${tmpProfile('idt3-save-' + GAME + '-' + process.pid)}`, 'about:blank']);
 const get = p => new Promise((res, rej) => http.get({ port: CDP, path: p }, r => {
   let d = ''; r.on('data', x => d += x); r.on('end', () => res(JSON.parse(d)));
 }).on('error', rej));

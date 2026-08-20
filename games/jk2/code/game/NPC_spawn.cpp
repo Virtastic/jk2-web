@@ -1373,6 +1373,36 @@ void NPC_Spawn_Go( gentity_t *ent )
 	newent->flags |= FL_NOTARGET;//So he's ignored until he's fully spawned
 	newent->s.eFlags |= EF_NODRAW;//So he's ignored until he's fully spawned
 
+	// idTech3-web: register the NPC with ICARUS here, at spawn, instead of leaving it to
+	// NPC_Begin one frame later.
+	//
+	// ICARUS_InitEnt() creates the sequencer AND calls ICARUS_AssociateEnt(), which is what puts
+	// the NPC's script_targetname into ICARUS_EntList -- the map that I_GetEntityByName() reads.
+	// NPC_Begin still calls it; ICARUS_InitEnt early-returns when a sequencer already exists, so
+	// that call simply becomes a no-op and no behaviour changes.
+	//
+	// Why it matters: CSequencer::ParseAffect() resolves affect("<name>") through that map, and
+	// when the lookup fails it does NOT fail the script -- it fast-forwards over the whole affect
+	// block and returns SEQ_OK. A cutscene that drives its actors through affect() therefore runs
+	// its own camera commands, silently skips every actor block, and finishes without ever
+	// reaching camera( DISABLE ). in_camera stays true, GameAllowedToSaveHere() returns false, and
+	// UI_SetActiveMenu returns at its first line, so ESC stops opening the in-game menu.
+	//
+	// MEASURED on kejim_post, devmap'ing the map already running. The actors are registered at
+	// level.time 1550 on both loads (cinematic1_jan = ent 351, cinematic1_kyle = ent 353 -- the
+	// two sequencers that drive the cutscene and issue DISABLE), because NPC_Begin is deferred:
+	//
+	//   first load: level_start fires at t=1600, cinematic1 at t=1650  -> after 1550 -> resolves
+	//   reload:     level_start fires at t=1450, cinematic1 at t=1500  -> before   -> 28 skipped
+	//                                                                     affect blocks, 0 on the
+	//                                                                     first load
+	//
+	// The scriptrunner is fired by the player's spawn-point targets, so its level.time depends on
+	// how quickly the client finishes loading; a warm reload connects sooner and wins the race
+	// against NPC_Begin. Registering at spawn removes the race rather than papering over it: the
+	// name is in the map before any script can run, whichever order the two happen in.
+	ICARUS_InitEnt( newent );
+
 	newent->e_ThinkFunc = thinkF_NPC_Begin;
 	newent->nextthink = level.time + FRAMETIME;
 	NPC_DefaultScriptFlags( newent );
