@@ -328,10 +328,13 @@ console.log(`after ESC (cleanup)  : keyCatchers=${await kc()}`);
 // --- 6. does the menu survive a SECOND map load? -------------------------
 // This is the discriminator for the real-world failure. Booting straight into a map the in-game
 // menu works; reaching the same map through the main menu (devmap from the UI) it never opens.
-// The difference is how many times the game module has been instantiated. If a second `devmap`
-// in the same session also kills the menu, the fault follows module re-instantiation -- `ge`
-// ends up pointing at an instance whose in_camera/killPlayerTimer statics are not the ones
-// gameplay is updating (the flat-namespace duplicate documented in sys_jk.cpp).
+// The difference is how many times the game module has been instantiated.
+//
+// DISPROVEN, and left here because the wrong guess is worth recording: this used to claim the
+// fault was a flat-namespace duplicate, with `ge` pointing at an instance whose in_camera is not
+// the one gameplay updates. Printing &in_camera from the cgame writer (CGCam_Enable/Disable) and
+// from the game reader in the SAME run gives one address for both, on both loads -- there is a
+// single instance and a single in_camera. See docs/WASM_ADAPTATIONS.md.
 if (process.env.SECOND_MAP) {
   console.log("\n--- reloading the map in the same session ---");
   // SECOND_MAP_NAME lets the second load be a DIFFERENT map, to separate 'any second load'

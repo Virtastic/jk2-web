@@ -733,6 +733,44 @@ ShutdownGame
 void ShutdownGame( void ) {
 	gi.Printf ("==== ShutdownGame ====\n");
 
+	// idTech3-web: restore the "fresh statics per map" invariant CG_GameStateReceived depends on.
+	//
+	// cg_main.cpp guards the full cgame reset with a counter:
+	//
+	//     iCGResetCount++;
+	//     if (iCGResetCount == 1)              // "this will only equal 1 first time,
+	//         qbVidRestartOccured = qfalse;    //  after each vid_restart it just gets higher."
+	//     if (!qbVidRestartOccured)
+	//         CG_Init_CG();
+	//
+	// Raven's own comment states the assumption: the counter is fresh on every DLL load. On PC the
+	// game module (which in SP contains cgame too) is unloaded per map, so it restarts at 0,
+	// reaches 1, and the reset runs; a vid_restart WITHIN a level does not unload it, so the
+	// counter climbs and the reset is correctly skipped, preserving the scrolling text crawl.
+	//
+	// Our side module persists, so the counter never restarted: the second map load in a session
+	// saw 2 and left qbVidRestartOccured true, which skips BOTH resets that flag guards --
+	// CG_Init_CG()'s memset of cg, and CGCam_Init()'s memset of client_camera (CGCam_Init is
+	// called unconditionally from CG_Init, but gates its own memset on the same flag).
+	//
+	// VERIFIED by probe: iCGResetCount now reads 1 at CG_GameStateReceived on both the first and
+	// the second load of a session (it read 2 on the second before this change), at one address
+	// throughout, so both resets run per map exactly as they do on PC.
+	//
+	// SCOPE, stated honestly: this restores the documented per-map invariant and is a real fix for
+	// a real staleness, but it does NOT fix the known console-only menu defect (devmap'ing the map
+	// you are already standing in can leave the in-game menu shut). That reproducer still fails
+	// with this change in place, so stale cgame reset state is not its cause. See
+	// docs/WASM_ADAPTATIONS.md for what that investigation has and has not ruled out.
+	//
+	// ShutdownGame is the faithful reset point: it runs on level change and NOT on vid_restart,
+	// exactly when PC would have unloaded the DLL. Resetting in CG_Shutdown instead would also
+	// fire on vid_restart and lose the text crawl.
+	{
+		extern int iCGResetCount;
+		iCGResetCount = 0;
+	}
+
 	gi.Printf ("... ICARUS_Shutdown\n");
 	ICARUS_Shutdown ();	//Shut ICARUS down
 
