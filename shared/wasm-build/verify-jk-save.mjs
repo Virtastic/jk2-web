@@ -85,16 +85,36 @@ for (let i = 0; i < 40; i++) {
   const b = (await S('Page.captureScreenshot', { format: 'png' })).data;
   if (a === b) break;                       // identical frames == no camera moving the view
 }
-const beforeLines = (await ringAll()).length;
-await exec(`save ${SAVENAME}`);
-await sleep(3000);
-// Whatever the engine said about it -- refusal reasons are printed in red.
-for (const l of (await ringAll()).slice(beforeLines).filter(l => l.trim()))
-  console.log('   engine: ' + l.replace(/\^[0-9]/g, '').trim());
+// Retry the save across a window instead of firing once.
+//
+// A single attempt tests "was saving permitted at this exact instant", not "does saving work".
+// Both refusal paths are reachable on a healthy engine and both used to be reported as a failed
+// save system: SV_SaveGame_f prints "Can't savegame while dead!" if the player has been killed
+// while the probe idled (kejim_post drops you into a firefight), and SG_GameAllowedToSaveHere
+// refuses SILENTLY while an in-game cinematic is running -- valley produced no engine output at
+// all, just no file. The settle-on-identical-frames heuristic above cannot separate "camera is
+// holding a static shot" from "safe to save", so it does not catch either case.
+// The window has to outlast the map intro, not just a pause in it: kejim_post holds the
+// camera for ~97s and refuses (correctly, and silently) for that whole time. 24 x ~8s
+// covers it with margin; valley needed 12.
+let wrote = false, attempts = 0, lastSaid = [];
+const SAVE_TRIES = parseInt(process.env.SAVE_TRIES || '24', 10);
+for (; attempts < SAVE_TRIES && !wrote; attempts++) {
+  const beforeLines = (await ringAll()).length;
+  await exec(`save ${SAVENAME}`);
+  await sleep(3000);
+  // Whatever the engine said about it -- refusal reasons are printed in red.
+  lastSaid = (await ringAll()).slice(beforeLines).filter(l => l.trim())
+                .map(l => l.replace(/\^[0-9]/g, '').trim());
+  wrote = ((await listSaves()) || '').includes(SAVENAME);
+  if (!wrote && attempts < SAVE_TRIES - 1) await sleep(5000);
+}
+for (const l of lastSaid) console.log('   engine: ' + l);
 const after = (await listSaves()) || '';
 console.log('after  save: ' + (after || '(none)'));
-const wrote = after.includes(SAVENAME);
-console.log(`save file written: ${wrote ? 'YES' : 'NO'}`);
+console.log(`save file written: ${wrote ? 'YES' : 'NO'} (attempt ${attempts} of ${SAVE_TRIES})`);
+if (!wrote && !lastSaid.length)
+  console.log('   NOTE: refused with no message -- SG_GameAllowedToSaveHere gate (cinematic/in_camera)');
 
 // Give the page's IDBFS sync a chance to run, then reload from scratch.
 await evalv('(function(){try{FS.syncfs(false,function(){});return 1;}catch(e){return 0;}})()');

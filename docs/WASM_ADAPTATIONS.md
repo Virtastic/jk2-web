@@ -4149,3 +4149,45 @@ Separately, `verify-jk-save.mjs` currently FAILS on `kejim_post` with "Can't sav
 the harness idles in a firefight and the player is killed before it saves. **Confirmed pre-existing**
 by stashing the fix, rebuilding and re-running: identical failure without it. It is a harness
 map-choice problem, not a regression, and is not fixed here.
+
+### Harness repairs: three false failures that were hiding the real signal
+
+Verifying the `affect()` fix meant running the whole suite, and three harnesses were broken in ways
+that produce failures indistinguishable from engine faults. All three are fixed; none was an engine
+problem.
+
+**`verify-jk-save.mjs` fired one save and called a correct refusal a FAIL.** Both refusal paths are
+reachable on a healthy engine: `SV_SaveGame_f` prints `Can't savegame while dead!` if the player is
+killed while the probe idles, and `SG_GameAllowedToSaveHere` refuses **silently** during an in-game
+cinematic. The existing settle-on-identical-frames heuristic cannot tell "camera holding a static
+shot" from "safe to save". Now retries across a bounded window (24 x ~8s, `SAVE_TRIES` to override)
+and reports the attempt count and the refusal reason.
+
+Results after the change -- the save system was never broken:
+
+| map | before | after |
+|-----|--------|-------|
+| `pit` | PASS | PASS |
+| `valley` | FAIL (silent refusal) | PASS on attempt 12 |
+| `kejim_post` | FAIL (`Can't savegame while dead!`, then silent) | PASS on attempt 16 of 24 |
+
+`kejim_post` holds its camera for ~97s, so any window shorter than the intro reports a working save
+system as broken. The save survives a full page reload through IDBFS in all three.
+
+**`verify-jk-save.mjs` keyed its Chrome profile directory by game name, not pid.** One crashed or
+killed run leaves a `SingletonLock`, after which every later Chrome exits immediately and the harness
+dies on a null `webSocketDebuggerUrl` -- which reads exactly like the engine failing to boot. This is
+what wedged a 31-minute regression run. Now pid-unique, like every other harness here. 529 stale
+`idt3-*` profile directories had accumulated in TEMP; the harnesses never clean up after themselves.
+
+**`verify-character.mjs` had never run on Windows at all.** It hardcoded
+`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, used `/tmp` for both the screenshot
+prefix and the profile directory, and shelled out to `rm -rf`. It now resolves Chrome and the temp
+directory through `chrome.mjs` like everything else, so a failure means the engine rather than the
+platform. Running it on `kejim_post` renders the opening cinematic correctly -- Kyle and Jan in the
+shuttle, MDS skeletal models with facial detail and lighting. Those two are `cinematic1_kyle` and
+`cinematic1_jan`: the exact actors whose `affect()` blocks were being silently skipped, so this is
+also independent confirmation of the fix above.
+
+Its `map <name> NOT-DETECTED` line is its own log-scraping heuristic and not a render verdict; the
+screenshots are the verdict.
