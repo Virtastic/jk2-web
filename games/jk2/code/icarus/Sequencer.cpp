@@ -686,6 +686,27 @@ int CSequencer::ParseAffect( CBlock *block, bstream_t *bstream )
 
 	if (stream_sequencer == NULL)
 	{
+		// idTech3-web: say this out loud.
+		//
+		// The line below routes through Q3_DebugPrint, which begins
+		//     if ( g_ICARUSDebug->integer < level ) return;
+		// and g_ICARUSDebug defaults to "0" while WL_ERROR is 1 and WL_WARNING is 2. Every ICARUS
+		// error and warning is therefore suppressed in the shipped configuration -- including this
+		// one, which reports that an entire affect() block is about to be skipped.
+		//
+		// That silence is what made the in-game-menu defect take so long to find: a cutscene ran
+		// its own camera commands, quietly elided every actor block whose target had not been
+		// registered yet, and finished without reaching camera( DISABLE ) -- with nothing in the
+		// log to say a block had been dropped. The engine then behaved as though a cinematic were
+		// still playing and ESC stopped opening the menu.
+		//
+		// A skipped block is a correctness failure, not debug chatter: script that the map author
+		// wrote did not run. Print it unconditionally so it can never hide again, and so the map
+		// sweep can assert on it. Deliberately narrow -- only this branch is made unconditional,
+		// not the whole WL_ERROR/WL_WARNING channel, which would flood the log with pre-existing
+		// script warnings from the retail maps.
+		Com_Printf( S_COLOR_YELLOW "WARNING: invalid affect() target '%s' -- skipping the whole "
+					"affect block (ICARUS script did not run)\n", entname ? entname : "(null)" );
 		m_ie->I_DPrintf( WL_WARNING, "'%s' : invalid affect() target\n", entname );
 		
 		//Fast-forward out of this affect block onto the next valid code
