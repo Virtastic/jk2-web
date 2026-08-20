@@ -362,12 +362,14 @@ if (process.env.SECOND_MAP) {
   }
   console.log(`after 2nd load, ESC  : keyCatchers=${kc2}`);
   {
-    await exec('idt3missdump');
+    await exec('idt3camdump');
     await sleep(1200);
     const all = await S('Runtime.evaluate', { returnByValue: true, expression: 'JSON.stringify(window.__allLog||[])' });
     let arr = []; try { arr = JSON.parse(all.result.value || '[]'); } catch {}
-    const m = arr.filter(l => /IDT3MISS|IDT3STALE/.test(String(l))).map(l => String(l).trim());
-    console.log(`   icarus: ${m.length ? m.slice(-2).join(' | ') : '(no reply)'}`);
+    const ops = arr.filter(l => /IDT3OP/.test(String(l))).map(l => String(l).trim().replace('IDT3OP ',''));
+    const tid = arr.filter(l => /IDT3TID/.test(String(l))).map(l => String(l).trim());
+    console.log(`   camera ops: ${ops.length ? ops.join(' > ') : '(no reply)'}`);
+    console.log(`   tasks: ${tid.length ? tid[tid.length-1] : '(no reply)'}`);
   }
   {
     // Dump the camera ring recorded without I/O on the failing path.
