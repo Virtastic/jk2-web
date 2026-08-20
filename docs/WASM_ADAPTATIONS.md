@@ -4191,3 +4191,35 @@ also independent confirmation of the fix above.
 
 Its `map <name> NOT-DETECTED` line is its own log-scraping heuristic and not a render verdict; the
 screenshots are the verdict.
+
+### `NAV_FindClosestWaypointForPoint`: a `static` that should never have been one
+
+```c
+int NAV_FindClosestWaypointForPoint( gentity_t *ent, vec3_t point )
+{
+    //FIXME: can we make this a static ent?
+    static gentity_t *marker = G_Spawn();   // <-- initialiser runs on the FIRST call only
+    ...
+    G_FreeEntity( marker );                 // <-- but this runs on EVERY call
+    return bestWP;
+}
+```
+
+A function-local static with a dynamic initialiser is initialised once, on first use. The marker is
+then freed at every exit, so from the second call onward the function writes `G_SetOrigin`, mins,
+maxs and clipmask through a freed `gentity_t` and frees it a second time -- and once `G_Spawn` has
+handed that slot back out, the second free deletes a live entity.
+
+The overload immediately below does the same job with a plain non-static
+`gentity_t *marker = G_Spawn();`. That is the intended form; the `static` is now dropped so the two
+are identical, at the cost of one `G_Spawn` per call that the sibling already pays.
+
+**Found by reading, not by a failure, and that is worth stating.** The only caller is AI_Utils.cpp's
+group-AI path, and an instrumented run measured `calls=0` on `kejim_post`, so none of the maps
+exercised here reach it -- it is emphatically *not* the cause of the menu defect, which was
+investigated and solved separately. It is fixed because it is wrong on any engine: a fresh DLL per
+map on PC only resets the pointer once per level rather than making the pattern correct, and our
+persistent side module additionally carries the dangling pointer across map loads into a
+`g_entities` array that `G_InitGame` has since memset and repopulated.
+
+Verified: full SP campaign sweep **26 maps, 26 OK, 0 FAILED**, heap flat at 768MB.

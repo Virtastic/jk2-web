@@ -313,7 +313,23 @@ int NAV_FindClosestWaypointForPoint( gentity_t *ent, vec3_t point )
 {
 	int	bestWP;
 	//FIXME: can we make this a static ent?
-	static gentity_t *marker = G_Spawn();
+	// idTech3-web: dropped the `static`.
+	//
+	// The marker is spawned ONCE (a function-local static with a dynamic initialiser runs its
+	// initialiser on first call only) but G_FreeEntity'd on EVERY exit, so from the second call
+	// onward this writes G_SetOrigin/mins/maxs/clipmask through a freed gentity_t and then frees
+	// it again. Once that slot has been handed back out by G_Spawn the second free deletes a live
+	// entity. The overload directly below does the same job with a plain non-static
+	// `gentity_t *marker = G_Spawn();` -- that is the intended form, and this is now identical to
+	// it: spawn per call, free per call, one G_Spawn's worth of cost that the sibling already pays.
+	//
+	// Found by reading, not by a failure: the only caller is AI_Utils.cpp's group-AI path, and an
+	// instrumented run measured calls=0 on kejim_post, so none of the maps exercised here reach it.
+	// It is fixed because it is wrong on any engine -- PC included, where a fresh DLL per map only
+	// resets it once per level rather than making it correct -- and because our persistent side
+	// module additionally carries the dangling pointer ACROSS map loads, into a g_entities array
+	// that G_InitGame has since memset and repopulated.
+	gentity_t *marker = G_Spawn();
 	
 	if ( !marker )
 	{
