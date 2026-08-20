@@ -37,3 +37,6 @@ node_modules/
 
 # Local dev config
 shared/web/.env
+
+# scratch capture from the uncapped-log harness
+idt3-full.log
