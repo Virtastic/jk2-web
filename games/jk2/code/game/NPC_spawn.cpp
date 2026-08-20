@@ -1399,8 +1399,27 @@ void NPC_Spawn_Go( gentity_t *ent )
 	//
 	// The scriptrunner is fired by the player's spawn-point targets, so its level.time depends on
 	// how quickly the client finishes loading; a warm reload connects sooner and wins the race
-	// against NPC_Begin. Registering at spawn removes the race rather than papering over it: the
-	// name is in the map before any script can run, whichever order the two happen in.
+	// against NPC_Begin.
+	//
+	// WHAT THIS DOES AND DOES NOT DO -- an earlier version of this comment claimed it put the name
+	// in the map "before any script can run, whichever order the two happen in". That is FALSE and
+	// was corrected after measuring it. NPCs are not created during the entity-string parse:
+	// SP_NPC_* spawns a spawner and NPC_Spawn_Go runs on a later think, so registration lands at
+	// level.time 1450 on frame 5, not at frame 0. Of 209 associations on kejim_post, 200 happen
+	// before the first G_RunFrame and all nine NPCs -- both cutscene actors included -- happen
+	// after it. This moves registration one frame and ~100ms earlier (NPC_Spawn_Go instead of
+	// NPC_Begin); it NARROWS the window, it does not close it. cinematic1 fires at t=1500,
+	// comfortably after 1450, which is the actual mechanism of the fix; kejim_start fires at
+	// t=1450, the same frame as registration, and happens to resolve.
+	//
+	// MEASURED effect, which is the claim that is actually supported:
+	//   kejim_post same-map reload:  28 skipped affect blocks -> 0
+	//   full SP campaign, 26 maps:   0 skipped affect blocks
+	//   kejim_post reload menu:      4/4 PASS (was 4/4 FAIL);  artus_mine PASS (was ~1-in-3 FAIL)
+	//
+	// A structural fix would have to register the name at parse time, which is not possible while
+	// the entity does not exist yet, or make ParseAffect fail loudly instead of fast-forwarding
+	// over an unresolved block -- a much broader behavioural change than this port should make.
 	ICARUS_InitEnt( newent );
 
 	newent->e_ThinkFunc = thinkF_NPC_Begin;
