@@ -365,6 +365,7 @@ if (process.env.SECOND_MAP) {
     await sleep(2500);
   }
   console.log(`after 2nd load, ESC  : keyCatchers=${kc2}`);
+
   {
     await exec('idt3mgr');
     await sleep(1200);
