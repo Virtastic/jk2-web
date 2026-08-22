@@ -40,3 +40,6 @@ shared/web/.env
 
 # scratch capture from the uncapped-log harness
 idt3-full.log
+
+# CI: infra-specific config (hosts, key paths) — never in a public repo
+ci/jenkins/config.env
