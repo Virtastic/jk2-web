@@ -82,7 +82,13 @@ ENGINE_CPP=$(grep -viE "win32/|smartheap/|mac/|0_compiled_first/|/FeelIt" "$BUIL
 
 if [ -z "${ENGINE_CPP:-}" ]; then
   # Regenerate the source list from the .dsp if not cached.
-  grep "SOURCE=" "$SRC/starwars.dsp" | sed 's/SOURCE=//; s/\\/\//g; s/^\.\///; s/"//g' \
+  # `tr -d '\r'`: starwars.dsp is a pristine CRLF file (never normalized — see .gitattributes).
+  # Without stripping the CR, every path ends "...cpp\r", so the `\.(cpp|c)$` anchor below never
+  # matches, grep returns "no match" (exit 1), and `set -o pipefail` aborts the whole build. This
+  # only bites a FRESH checkout (no cached engine-sources.txt) on a case/CRLF-strict host like the
+  # Linux build server; a dev box with the cache present skips this path and never saw it. The
+  # module build (build-jk2-modules.sh) already strips \r here — this brings the engine build in line.
+  grep "SOURCE=" "$SRC/starwars.dsp" | sed 's/SOURCE=//; s/\\/\//g; s/^\.\///; s/"//g' | tr -d '\r' \
     | grep -iE "\.(cpp|c)$" | grep -viE "win32/|smartheap/|mac/|0_compiled_first/|/FeelIt" \
     | sort -u > "$BUILD/engine-sources.txt"
   ENGINE_CPP=$(cat "$BUILD/engine-sources.txt")
@@ -117,6 +123,25 @@ fi
 # outcast), which is the entire story-cutscene layer; all 15 verified decoding and animating
 # in-browser, see verify-cinematic.mjs.
 ENGINE_CPP=$(echo "$ENGINE_CPP" | tr ' ' '\n' | grep -viE "encryption/")
+
+# idTech3-web: resolve each source path to its ACTUAL on-disk case. starwars.dsp was authored on a
+# case-INSENSITIVE Windows filesystem, so it lists e.g. ghoul2/G2_API.cpp, mp3code/csbtL3.c,
+# renderer/MatComp.c, renderer/tr_WorldEffects.cpp while the pristine files on disk are lowercase
+# (g2_api.cpp, csbtl3.c, ...). That compiles fine on macOS/Windows but not on a case-SENSITIVE Linux
+# build server, where clang reports "no such file or directory" for 9 of the 144 sources. Map
+# dsp-case -> disk-case here rather than renaming pristine files or editing the pristine .dsp.
+resolve_src_case() {
+  local rel dir base hit
+  while IFS= read -r rel; do
+    [ -z "$rel" ] && continue
+    if [ -f "$SRC/$rel" ]; then echo "$rel"; continue; fi
+    dir=$(dirname "$rel"); base=$(basename "$rel")
+    hit=$(ls "$SRC/$dir" 2>/dev/null | grep -ixF "$base" | head -1)
+    [ -n "$hit" ] && echo "$dir/$hit" || echo "$rel"   # keep original if truly absent (errors visibly)
+  done
+}
+ENGINE_CPP=$(printf '%s\n' "$ENGINE_CPP" | resolve_src_case)
+
 SYS_CPP="sys_emscripten/idt3_dlopen.c sys_emscripten_jk/sys_jk.cpp sys_emscripten_jk/sys_jk_gl.cpp sys_emscripten_jk/sys_jk_snd.cpp sys_emscripten_jk/sys_jk_stubs.cpp"
 
 OBJS=(); FAILED=()

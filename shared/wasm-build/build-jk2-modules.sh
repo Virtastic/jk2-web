@@ -64,10 +64,17 @@ CXXARGS=( "${JK2_FLAGS[@]}" "${INCLUDES[@]}" "${DEFINES[@]}" )
 # ".\foo.cpp" → game/foo.cpp, "..\cgame\foo.cpp" → cgame/foo.cpp, Icarus/ → icarus/.
 GAME_CPP=$(sed 's#^\.\./##; s#Icarus/#icarus/#' "$BUILD/../game-sources.txt" 2>/dev/null | grep -v "^bg_lib[.]cpp$" || true)
 if [ -z "${GAME_CPP:-}" ]; then
-  grep "SOURCE=" "$SRC/game/game.dsp" | sed 's/SOURCE=//; s/\\/\//g; s/"//g; s#^\.\./##; s#^\./##; s#Icarus/#icarus/#' \
-    | grep -iE "\.(cpp|c)$" | tr -d '\r' | sort -u > "$BUILD/../game-sources.txt"
+  # tr -d '\r' BEFORE the .cpp filter: game.dsp is pristine CRLF, so `grep '\.(cpp|c)$'` never
+  # matches "...cpp\r" and on a FRESH Linux build this list came out EMPTY -- no game TU compiled,
+  # and the SIDE_MODULE linked to a 375-byte stub with GetGameAPI undefined. A dev box with the
+  # cached game-sources.txt never saw it. (The filter used to sit before `tr -d '\r'`; the link
+  # step below now also fails loudly instead of shipping the stub.)
+  grep "SOURCE=" "$SRC/game/game.dsp" | tr -d '\r' \
+    | sed 's/SOURCE=//; s/\\/\//g; s/"//g; s#^\.\./##; s#^\./##; s#Icarus/#icarus/#' \
+    | grep -iE "\.(cpp|c)$" | sort -u > "$BUILD/../game-sources.txt"
   GAME_CPP=$(grep -v "^bg_lib[.]cpp$" "$BUILD/../game-sources.txt")
 fi
+[ -n "${GAME_CPP:-}" ] || { echo "FATAL: game source list is empty (game.dsp parse produced nothing)"; exit 1; }
 
 OBJS=(); FAILED=(); : > "$BUILD/build.errs"
 
@@ -112,6 +119,12 @@ echo "== linking qagame.wasm =="
 # vmMain/dllEntry are exported too: SP merges cgame into this module, and the
 # engine's Sys_LoadCgame dlsym()s them out of the SAME library (see the original
 # win32 layer). idt3_vmMain_arr is the vararg-safe array entry VM_Call uses.
-em++ "${OBJS[@]}" -sSIDE_MODULE=2 -sEXPORTED_FUNCTIONS=_GetGameAPI,_vmMain,_dllEntry,_idt3_vmMain_arr ${IDTECH3_THREAD_FLAGS} -fexceptions \
-  -o "$OUT/qagame.wasm"
-echo "== done: $OUT/qagame.wasm =="
+if ! em++ "${OBJS[@]}" -sSIDE_MODULE=2 -sEXPORTED_FUNCTIONS=_GetGameAPI,_vmMain,_dllEntry,_idt3_vmMain_arr ${IDTECH3_THREAD_FLAGS} -fexceptions \
+  -o "$OUT/qagame.wasm"; then
+  echo "FATAL: qagame.wasm link failed (see errors above)"; exit 1
+fi
+# A real SIDE_MODULE is ~1.5 MB; a few hundred bytes means the game objects were missing and only
+# the export stub got written -- the failure that shipped silently before this guard existed.
+_qsz=$(wc -c < "$OUT/qagame.wasm")
+[ "$_qsz" -gt 262144 ] || { echo "FATAL: qagame.wasm is only $_qsz bytes -- game objects did not link"; exit 1; }
+echo "== done: $OUT/qagame.wasm ($_qsz bytes) =="
