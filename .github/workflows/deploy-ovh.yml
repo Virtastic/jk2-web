@@ -28,7 +28,11 @@ jobs:
           test -n "$(ls -A "$HOME/jk2-web-src/play/jk2" 2>/dev/null)" \
             || { echo "FATAL: ~/jk2-web-src/play/jk2 missing on the runner — build+rsync the wasm first." >&2; exit 1; }
           mkdir -p play/jk2
-          rsync -a --delete "$HOME/jk2-web-src/play/jk2/" play/jk2/
+          # Overlay ONLY the gitignored build products (wasm/js/data + demo assets) onto the
+          # checkout. Committed html (index.html/launcher.html — the gold launcher) MUST come from
+          # git, never from the staging dir, which may hold a stale copy. --exclude protects them
+          # from both the copy and --delete.
+          rsync -a --delete --exclude='*.html' "$HOME/jk2-web-src/play/jk2/" play/jk2/
           echo "staged $(find play/jk2 -type f | wc -l) files ($(du -sh play/jk2 | cut -f1))"
 
       - name: Build image
