@@ -2,7 +2,7 @@
 # Post-deploy contract test against a deployed jk2 origin (or the container port directly). A 200
 # proves little — assert the serving contract a player actually needs. curl-only so it runs anywhere.
 #
-# Usage: smoke-test.sh <base-url>     e.g. smoke-test.sh http://<test-host>:8082
+# Usage: smoke-test.sh <base-url>     e.g. smoke-test.sh http://test-host.example:8082
 #                                          smoke-test.sh https://jk2.dev.virtastic.app
 set -uo pipefail
 BASE="${1:?usage: smoke-test.sh <base-url>}"; BASE="${BASE%/}"
