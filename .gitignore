@@ -30,6 +30,9 @@ data/jk2-demo/
 data/jka-demo/
 *.pk3
 play/*/etmain/
+play/*/base/
+play/*/demo/
+play/*/main/
 
 # Node / tooling
 node_modules/
@@ -43,3 +46,7 @@ idt3-full.log
 
 # CI: infra-specific config (hosts, key paths) — never in a public repo
 ci/jenkins/config.env
+
+# Savegames are user data derived from a retail install — never ours to publish.
+*.sav
+play/*/saves/

@@ -70,7 +70,7 @@ engineering log):
 - **Single-player only.** The multiplayer sources (`games/jk2/CODE-mp/`) are part of the pristine
   drop but are not built. `shared/web/net-relay.mjs` and the relay plumbing in `index.html` are
   therefore inert here; they are kept because the relay is a standalone, documented utility
-  (`docs/SECURITY.md`) rather than dead code inside the engine.
+  (see `shared/web/net-relay.mjs`'s own header) rather than dead code inside the engine.
 - **State.** The campaign runs end to end: 26/26 maps load and reach gameplay in one session, saves
   survive a page reload, scripted level transitions carry the player, and the RoQ cinematics play
   with audio. See `docs/WASM_ADAPTATIONS.md` for what was adapted and why.

@@ -6,42 +6,48 @@ assets). Each game loads its `.pk3` archives from `play/<game>/<gamedir>/`. The 
 each `play/<game>/index.html` auto-discovers and loads **all** of them — so the *same* code path
 serves the tiny free demo and the full retail install. Drop paks in, reload, done.
 
-## Where each game's paks go
+## Where the paks go
 
 | Game | Port | Data dir | Retail paks (typical) | Run |
 |------|------|----------|-----------------------|-----|
-| RTCW-SP | 8790 | `play/rtcw/main/` | `pak0.pk3` (+ `sp_pak1..4.pk3`) | `python3 shared/web/server.py rtcw` |
-| RTCW-MP | 8791 | `play/rtcwmp/main/` | `mp_pak0..3.pk3`, `pak0.pk3` | `python3 shared/web/server.py rtcwmp` |
-| Wolf:ET | 8792 | `play/wolfet/etmain/` | `pak0..2.pk3`, `mp_bin.pk3` (freely redistributable) | `python3 shared/web/server.py wolfet` |
-| JK2 | 8793 | `play/jk2/base/` (retail) · `play/jk2/demo/` (demo) | `assets0..2.pk3` | `python3 shared/web/server.py jk2` |
-| JKA | 8794 | `play/jka/base/` (retail) · `play/jka/demo/` (demo) | `assets0..3.pk3` | `python3 shared/web/server.py jka` |
+| JK2 | 8793 | `play/jk2/base/` (retail) · `play/jk2/demo/` (demo) | `assets0.pk3`, `assets1.pk3`, `assets2.pk3`, `assets5.pk3` | `python3 shared/web/server.py jk2` |
 
 Then open `http://localhost:<port>/` (append `?args=+devmap <map>` to jump straight into a map).
 
-## RTCW-SP / RTCW-MP / Wolf:ET — just drop paks in
+## Demo checksum vs retail
 
-1. Copy your retail `.pk3` files into the data dir above (e.g. RTCW-SP retail `pak0.pk3` →
-   `play/rtcw/main/`). Leave or replace the demo pak; the loader takes whatever is there.
-2. Restart that game's server (so `/__paks` re-scans) and reload the page.
+These Raven engines gate demo vs retail themselves, in `FS_SetRestrictions()`
+(`qcommon/files_pc.cpp`):
 
-That's it — no filename list to edit. Verified end-to-end on the demo/free data for all three.
+- **Demo mode**: the engine cannot resolve `productid.txt`, so it sets `fs_restrict 1`, restarts
+  the filesystem on `DEMOGAME`, and requires **exactly one** pak whose checksum matches the
+  built-in `DEMO_PAK_CHECKSUM` — any extra/altered pak → hard error `Corrupted pk3`. So the demo
+  dir holds precisely the genuine `assets0.pk3` and nothing else. Do not add paks to `demo/`.
+- **Retail mode**: drop the retail `assets*.pk3` into `play/jk2/base/` and reload. That is the
+  whole procedure.
 
-## JK2 / JKA — one extra step (demo checksum vs retail)
+**There is no marker file to create.** An earlier version of this document said to add a
+`productid.txt` to `base/`; that is wrong, and it would not have worked anyway — the file is not
+a marker but a key, checked byte-for-byte against the scrambled `fs_scrambledProductId` table in
+`files_common.cpp`, with a mismatch being a fatal `Invalid product identification`. `FS_ReadFile`
+resolves it through the whole search path, **including inside the paks**, and the retail data
+already ships it:
 
-These Raven engines gate demo vs retail themselves:
+| Game | `productid.txt` lives in |
+|------|--------------------------|
+| JKA  | `assets2.pk3` |
+| JK2  | `assets0.pk3` |
 
-- **Demo mode** (what ships now): the engine sees no `productid.txt` marker, runs
-  `fs_restrict 1`, and requires **exactly one** pak whose checksum matches the built-in
-  `DEMO_PAK_CHECKSUM` — any extra/altered pak → hard error `Corrupted pk3`. So the demo dir holds
-  precisely the genuine `assets0.pk3` and nothing else. (These two loaders are intentionally left
-  on their demo path; do not add paks to `demo/`.)
-- **Retail mode**: put the retail `assets0..N.pk3` in `play/jk2/base/` (resp. `play/jka/base/`),
-  add a `productid.txt` marker file in `play/jk2/base/`, and set `window.__JK2_GAMEDIR = 'base'`
-  (resp. `__JKA_GAMEDIR`) near the top of that game's `index.html`. With the marker present the
-  engine drops demo restrictions and loads the full `base/` search path normally.
+So a complete retail set drops the demo restrictions by itself. The failure mode to know about is
+an *incomplete* set: pick only `assets0.pk3` + `assets1.pk3` on JK2 and there is no
+`productid.txt` anywhere, the engine silently falls back to demo mode, and the multi-pak search
+path then dies on `Corrupted pk3`. `play/jk2/index.html` now pre-checks the selected paks for a
+`productid.txt` entry (by slicing each zip's tail, where the central directory lives) and explains
+the problem instead of letting the engine fail that way.
 
-This retail path is **not yet verified** (needs the retail data); it's the first thing to test in
-the production-data pass.
+**Status: JKA retail is verified end-to-end** — Steam install (`assets0..3.pk3`, 1.22 GB, 23,744
+files), unrestricted `base/` search path, real main menu, `map yavin1` loads and plays. See
+`docs/WASM_ADAPTATIONS.md`. The JK2 retail path is still unverified.
 
 ## Memory ceiling (why full-load, and its limit)
 
