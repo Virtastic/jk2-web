@@ -1,3 +1,8 @@
+# PRODUCTION compose for jk2.virtastic.app. Expects the image to exist already
+# (built by the deploy workflow with `--target prebuilt`) and to join the shared edge
+# network; it publishes no ports of its own.
+#
+# Self-hosting? Use docker-compose.yml instead — it builds from source and serves on :8080.
 # Production compose for jk2.virtastic.app — synced to /opt/jk2/ on the OVH VPS.
 # One static-serving container on the shared `nostalgia` network; the shared edge Caddy reaches it
 # by name (jk2:80). Publishes NO host ports — only the edge talks to it. No secrets, no db.

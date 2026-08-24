@@ -36,7 +36,7 @@ jobs:
           echo "staged $(find play/jk2 -type f | wc -l) files ($(du -sh play/jk2 | cut -f1))"
 
       - name: Build image
-        run: DOCKER_BUILDKIT=1 docker build --network=host -t jk2:ovh -f Dockerfile .
+        run: DOCKER_BUILDKIT=1 docker build --network=host --target prebuilt -t jk2:ovh -f Dockerfile .
 
       - name: Sync compose to /opt/jk2
         run: |
